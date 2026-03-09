@@ -280,6 +280,7 @@ describe("MeshimizeAPI", () => {
       expect(err).toBeInstanceOf(MeshimizeAPIError);
       const apiErr = err as MeshimizeAPIError;
       expect(apiErr.status).toBe(403);
+      expect(apiErr.message).toBe("Insufficient permissions");
       expect(apiErr.responseBody).toEqual({
         error: { code: "forbidden", message: "Insufficient permissions" },
       });

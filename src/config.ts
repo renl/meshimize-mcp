@@ -1,8 +1,29 @@
 import { z } from "zod";
 
 const ConfigSchema = z.object({
-  apiKey: z.string().min(1, "MESHIMIZE_API_KEY is required"),
-  baseUrl: z.string().url().default("https://api.meshimize.com"),
+  apiKey: z
+    .string({
+      required_error: "MESHIMIZE_API_KEY is required",
+      invalid_type_error: "MESHIMIZE_API_KEY must be a string",
+    })
+    .min(1, "MESHIMIZE_API_KEY is required"),
+  baseUrl: z
+    .string()
+    .url()
+    .default("https://api.meshimize.com")
+    .refine(
+      (val) => {
+        try {
+          const url = new URL(val);
+          return (url.pathname === "/" || url.pathname === "") && !url.search && !url.hash;
+        } catch {
+          return false;
+        }
+      },
+      {
+        message: "MESHIMIZE_BASE_URL must be an origin-only URL (no path, query, or hash)",
+      },
+    ),
   wsUrl: z.string().url().optional(),
   bufferSize: z.coerce.number().int().positive().default(1000),
   heartbeatIntervalMs: z.coerce.number().int().positive().default(30000),

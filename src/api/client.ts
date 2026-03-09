@@ -13,10 +13,35 @@ export class MeshimizeAPIError extends Error {
   public readonly responseBody: unknown;
 
   constructor(status: number, responseBody: unknown) {
-    const message =
-      typeof responseBody === "object" && responseBody !== null && "error" in responseBody
-        ? String((responseBody as Record<string, unknown>).error)
-        : `HTTP ${status}`;
+    let message = `HTTP ${status}`;
+
+    if (typeof responseBody === "object" && responseBody !== null) {
+      const body = responseBody as Record<string, unknown>;
+
+      if ("error" in body) {
+        const errorValue = body.error;
+
+        if (typeof errorValue === "string") {
+          message = errorValue;
+        } else if (
+          typeof errorValue === "object" &&
+          errorValue !== null &&
+          "message" in (errorValue as Record<string, unknown>) &&
+          typeof (errorValue as Record<string, unknown>).message === "string"
+        ) {
+          message = (errorValue as Record<string, unknown>).message as string;
+        } else {
+          try {
+            message = JSON.stringify(errorValue);
+          } catch {
+            // Keep default HTTP-based message if JSON serialization fails
+          }
+        }
+      } else if ("message" in body && typeof body.message === "string") {
+        message = body.message;
+      }
+    }
+
     super(message);
     this.name = "MeshimizeAPIError";
     this.status = status;
@@ -69,14 +94,28 @@ export class MeshimizeAPI {
       // Handle 429 with retry (if attempts remain)
       if (response.status === 429 && attempt < maxAttempts - 1) {
         const retryAfter = response.headers.get("Retry-After");
+        const baseDelay = 1000;
+        const maxDelay = 30000;
         let delayMs: number;
 
         if (retryAfter) {
-          delayMs = parseInt(retryAfter, 10) * 1000;
+          // Retry-After can be either seconds or an HTTP-date; handle both safely.
+          const seconds = Number(retryAfter);
+          if (Number.isFinite(seconds) && seconds >= 0) {
+            delayMs = Math.min(seconds * 1000, maxDelay);
+          } else {
+            const retryTimestamp = Date.parse(retryAfter);
+            if (!Number.isNaN(retryTimestamp)) {
+              const diff = retryTimestamp - Date.now();
+              delayMs = diff > 0 ? Math.min(diff, maxDelay) : 0;
+            } else {
+              // Malformed Retry-After header: fall back to exponential backoff with jitter.
+              delayMs = Math.min(baseDelay * Math.pow(2, attempt) + Math.random() * 1000, maxDelay);
+            }
+          }
         } else {
           // Exponential backoff with jitter: min(base * 2^attempt + random(0, 1000ms), 30s)
-          const baseDelay = 1000;
-          delayMs = Math.min(baseDelay * Math.pow(2, attempt) + Math.random() * 1000, 30000);
+          delayMs = Math.min(baseDelay * Math.pow(2, attempt) + Math.random() * 1000, maxDelay);
         }
 
         await new Promise((resolve) => setTimeout(resolve, delayMs));

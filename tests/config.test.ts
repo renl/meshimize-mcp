@@ -71,4 +71,11 @@ describe("loadConfig", () => {
 
     expect(config.wsUrl).toBe("ws://localhost:4000/api/v1/ws");
   });
+
+  it("should reject baseUrl with a path component", () => {
+    process.env.MESHIMIZE_API_KEY = "mshz_test_key_123";
+    process.env.MESHIMIZE_BASE_URL = "https://api.meshimize.com/some/path";
+
+    expect(() => loadConfig()).toThrow("origin-only URL");
+  });
 });

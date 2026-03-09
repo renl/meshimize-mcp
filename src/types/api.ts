@@ -32,7 +32,7 @@ export interface PaginatedResponse<T> {
   meta: PaginationMeta;
 }
 
-/** Full account data as returned by GET /api/v1/account. */
+/** Account data (inner `data` object from GET /api/v1/account response). */
 export interface AccountResponse {
   id: string;
   email: string;
