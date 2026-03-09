@@ -73,18 +73,23 @@ export class PhoenixSocket implements SocketAdapter {
 
       this.ws.on("close", () => {
         this.stopHeartbeat();
+        this.ws = null;
         this.rejectAllPending();
 
-        if (this.state === "connecting") {
-          // Connection failed before open
+        const wasConnecting = this.state === "connecting";
+
+        if (wasConnecting) {
+          // Connection failed before open — reject the connect() promise
           this.setState("disconnected");
           reject(new Error("WebSocket closed before connection established"));
-          return;
         }
 
         if (!this.intentionalDisconnect) {
+          // Schedule reconnect regardless of whether this was a connect() or established connection.
+          // For initial connect() failures during a reconnect cycle, this ensures the next
+          // reconnect attempt is scheduled (the catch in attemptReconnect logs but doesn't re-schedule).
           this.attemptReconnect();
-        } else {
+        } else if (!wasConnecting) {
           this.setState("disconnected");
         }
       });

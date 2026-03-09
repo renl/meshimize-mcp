@@ -45,9 +45,18 @@ export class Channel {
     this.state = "joining";
     this.joinRef = this.socket.makeRef();
     const ref = this.socket.makeRef();
+    const expectedJoinRef = this.joinRef;
 
     try {
       const reply = await this.socket.sendJoin(this.joinRef, ref, this.topic);
+
+      // Guard: if state changed during await (e.g., concurrent leave()), do not apply reply
+      if (this.joinRef !== expectedJoinRef || this.state !== "joining") {
+        throw new Error(
+          `Channel "${this.topic}" state changed during join (expected "joining", got "${this.state}")`,
+        );
+      }
+
       if (reply.status === "ok") {
         this.state = "joined";
         return reply.response;
@@ -68,8 +77,15 @@ export class Channel {
     }
   }
 
-  /** Leave the channel — sends phx_leave. */
+  /** Leave the channel — sends phx_leave. No-op if already closed. */
   async leave(): Promise<void> {
+    if (this.state === "closed") {
+      return;
+    }
+    if (this.state === "leaving") {
+      return;
+    }
+
     this.state = "leaving";
     const ref = this.socket.makeRef();
 
