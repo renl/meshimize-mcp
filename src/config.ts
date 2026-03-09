@@ -15,16 +15,36 @@ const ConfigSchema = z.object({
       (val) => {
         try {
           const url = new URL(val);
-          return (url.pathname === "/" || url.pathname === "") && !url.search && !url.hash;
+          const isOriginOnly =
+            (url.pathname === "/" || url.pathname === "") && !url.search && !url.hash;
+          const isHttpScheme = url.protocol === "http:" || url.protocol === "https:";
+          return isOriginOnly && isHttpScheme;
         } catch {
           return false;
         }
       },
       {
-        message: "MESHIMIZE_BASE_URL must be an origin-only URL (no path, query, or hash)",
+        message: "MESHIMIZE_BASE_URL must be an origin-only HTTP(S) URL (no path, query, or hash)",
       },
     ),
-  wsUrl: z.string().url().optional(),
+  wsUrl: z
+    .string()
+    .url()
+    .optional()
+    .refine(
+      (val) => {
+        if (!val) return true;
+        try {
+          const url = new URL(val);
+          return url.protocol === "ws:" || url.protocol === "wss:";
+        } catch {
+          return false;
+        }
+      },
+      {
+        message: "MESHIMIZE_WS_URL must use ws:// or wss:// scheme",
+      },
+    ),
   bufferSize: z.coerce.number().int().positive().default(1000),
   heartbeatIntervalMs: z.coerce.number().int().positive().default(30000),
   reconnectIntervalMs: z.coerce.number().int().positive().default(5000),

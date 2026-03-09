@@ -76,6 +76,29 @@ describe("loadConfig", () => {
     process.env.MESHIMIZE_API_KEY = "mshz_test_key_123";
     process.env.MESHIMIZE_BASE_URL = "https://api.meshimize.com/some/path";
 
-    expect(() => loadConfig()).toThrow("origin-only URL");
+    expect(() => loadConfig()).toThrow("origin-only");
+  });
+
+  it("should reject baseUrl with non-HTTP scheme", () => {
+    process.env.MESHIMIZE_API_KEY = "mshz_test_key_123";
+    process.env.MESHIMIZE_BASE_URL = "ftp://api.meshimize.com";
+
+    expect(() => loadConfig()).toThrow("origin-only");
+  });
+
+  it("should reject wsUrl with non-WebSocket scheme", () => {
+    process.env.MESHIMIZE_API_KEY = "mshz_test_key_123";
+    process.env.MESHIMIZE_WS_URL = "https://api.meshimize.com/ws";
+
+    expect(() => loadConfig()).toThrow("ws:// or wss://");
+  });
+
+  it("should accept valid wsUrl with wss scheme", () => {
+    process.env.MESHIMIZE_API_KEY = "mshz_test_key_123";
+    process.env.MESHIMIZE_WS_URL = "wss://api.meshimize.com/api/v1/ws";
+
+    const config = loadConfig();
+
+    expect(config.wsUrl).toBe("wss://api.meshimize.com/api/v1/ws");
   });
 });

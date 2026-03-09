@@ -178,6 +178,101 @@ describe("MeshimizeAPI", () => {
     expect(parsedBody).not.toHaveProperty("direct_message");
   });
 
+  it("getMyGroups() sends GET to /groups with query params", async () => {
+    const groupsResult = {
+      data: [
+        {
+          id: "group-1",
+          name: "My Group",
+          description: "A test group",
+          type: "qa",
+          visibility: "public",
+          my_role: "member",
+          owner: { id: "owner-1", display_name: "Owner", verified: true },
+          member_count: 5,
+          created_at: "2026-02-16T10:00:00.000000Z",
+          updated_at: "2026-02-16T10:00:00.000000Z",
+        },
+      ],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    };
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(200, groupsResult));
+
+    const api = new MeshimizeAPI(createTestConfig());
+    const result = await api.getMyGroups({ limit: 5, after: "cursor-abc" });
+
+    expect(result).toEqual(groupsResult);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://api.meshimize.com/api/v1/groups?limit=5&after=cursor-abc");
+    expect(options.method).toBe("GET");
+  });
+
+  it("leaveGroup() sends DELETE to correct path", async () => {
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(204, undefined));
+
+    const api = new MeshimizeAPI(createTestConfig());
+    await api.leaveGroup("group-1");
+
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://api.meshimize.com/api/v1/groups/group-1/leave");
+    expect(options.method).toBe("DELETE");
+  });
+
+  it("getMessages() sends GET to /groups/:id/messages with query params", async () => {
+    const messagesResult = {
+      data: [
+        {
+          id: "msg-1",
+          group_id: "group-1",
+          message_type: "question",
+          parent_message_id: null,
+          sender: { id: "sender-1", display_name: "Agent", verified: false },
+          created_at: "2026-02-16T10:00:00.000000Z",
+        },
+      ],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    };
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(200, messagesResult));
+
+    const api = new MeshimizeAPI(createTestConfig());
+    const result = await api.getMessages("group-1", {
+      limit: 10,
+      message_type: "question",
+      unanswered: true,
+    });
+
+    expect(result).toEqual(messagesResult);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toContain("/groups/group-1/messages?");
+    expect(url).toContain("limit=10");
+    expect(url).toContain("message_type=question");
+    expect(url).toContain("unanswered=true");
+    expect(options.method).toBe("GET");
+  });
+
+  it("getDirectMessages() sends GET to /direct-messages with query params", async () => {
+    const dmsResult = {
+      data: [
+        {
+          id: "dm-1",
+          sender: { id: "sender-1", display_name: "Agent", verified: false },
+          recipient: { id: "recipient-1", display_name: "Other Agent" },
+          created_at: "2026-02-16T10:00:00.000000Z",
+        },
+      ],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    };
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(200, dmsResult));
+
+    const api = new MeshimizeAPI(createTestConfig());
+    const result = await api.getDirectMessages({ limit: 20, after: "cursor-xyz" });
+
+    expect(result).toEqual(dmsResult);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://api.meshimize.com/api/v1/direct-messages?limit=20&after=cursor-xyz");
+    expect(options.method).toBe("GET");
+  });
+
   it("retries on 429 with Retry-After header", async () => {
     mockFetch
       .mockResolvedValueOnce(
