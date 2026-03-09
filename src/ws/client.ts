@@ -73,6 +73,7 @@ export class PhoenixSocket implements SocketAdapter {
 
       this.ws.on("close", () => {
         this.stopHeartbeat();
+        this.rejectAllPending();
 
         if (this.state === "connecting") {
           // Connection failed before open
@@ -122,6 +123,11 @@ export class PhoenixSocket implements SocketAdapter {
       }
     }
 
+    // Reset all channel states without sending (fire-and-forget leave already sent above)
+    for (const channel of this.channels.values()) {
+      channel.resetState();
+    }
+
     this.stopHeartbeat();
 
     if (this.ws) {
@@ -169,30 +175,51 @@ export class PhoenixSocket implements SocketAdapter {
 
   // --- Internal methods ---
 
-  private send(message: PhoenixMessage): void {
+  private send(message: PhoenixMessage): boolean {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
+      return true;
     }
+    this.logger("warn", "Attempted to send message while socket is not open");
+    return false;
   }
 
   private pushWithReply(ref: string, message: PhoenixMessage): Promise<PhoenixReplyPayload> {
     return new Promise<PhoenixReplyPayload>((resolve, reject) => {
       this.pendingReplies.set(ref, resolve);
       this.pendingRejects.set(ref, reject);
-      this.send(message);
+      const sent = this.send(message);
+      if (!sent) {
+        this.pendingReplies.delete(ref);
+        this.pendingRejects.delete(ref);
+        reject(new Error("WebSocket is not connected; message was not sent"));
+      }
     });
   }
 
+  private normalizeData(data: WebSocket.Data): string {
+    if (typeof data === "string") return data;
+    if (Buffer.isBuffer(data)) return data.toString("utf-8");
+    if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf-8");
+    if (Array.isArray(data)) return Buffer.concat(data).toString("utf-8");
+    return String(data);
+  }
+
   private handleMessage(data: WebSocket.Data): void {
-    let parsed: PhoenixMessage;
+    let parsed: unknown;
     try {
-      parsed = JSON.parse(data.toString()) as PhoenixMessage;
+      parsed = JSON.parse(this.normalizeData(data));
     } catch {
       this.logger("error", "Failed to parse incoming WebSocket message");
       return;
     }
 
-    const [, ref, topic, event, payload] = parsed;
+    if (!Array.isArray(parsed) || parsed.length !== 5) {
+      this.logger("warn", "Received invalid Phoenix message frame shape");
+      return;
+    }
+
+    const [, ref, topic, event, payload] = parsed as PhoenixMessage;
 
     if (event === "phx_reply") {
       this.handleReply(ref, payload as PhoenixReplyPayload);
@@ -272,6 +299,15 @@ export class PhoenixSocket implements SocketAdapter {
       this.heartbeatTimer = null;
     }
     this.pendingHeartbeatRef = null;
+  }
+
+  private rejectAllPending(): void {
+    for (const [ref, reject] of this.pendingRejects) {
+      reject(new Error("WebSocket connection closed"));
+      this.pendingReplies.delete(ref);
+    }
+    this.pendingRejects.clear();
+    this.pendingReplies.clear();
   }
 
   private attemptReconnect(): void {

@@ -1,11 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { MessageBuffer } from "../src/buffer/message-buffer.js";
 import type { MessageDataResponse, DirectMessageDataResponse } from "../src/types/messages.js";
+
+let idCounter = 0;
 
 /** Creates a realistic group message with all required fields. */
 function makeGroupMessage(overrides: Partial<MessageDataResponse> = {}): MessageDataResponse {
   return {
-    id: overrides.id ?? `msg-${Math.random().toString(36).slice(2, 8)}`,
+    id: overrides.id ?? `msg-auto-${++idCounter}`,
     group_id: overrides.group_id ?? "group-default",
     content: overrides.content ?? "Test message content",
     message_type: overrides.message_type ?? "post",
@@ -24,7 +26,7 @@ function makeDirectMessage(
   overrides: Partial<DirectMessageDataResponse> = {},
 ): DirectMessageDataResponse {
   return {
-    id: overrides.id ?? `dm-${Math.random().toString(36).slice(2, 8)}`,
+    id: overrides.id ?? `dm-auto-${++idCounter}`,
     content: overrides.content ?? "Direct message content",
     sender: overrides.sender ?? {
       id: "sender-1",
@@ -40,6 +42,10 @@ function makeDirectMessage(
 }
 
 describe("MessageBuffer", () => {
+  beforeEach(() => {
+    idCounter = 0;
+  });
+
   it("push and retrieve group messages", () => {
     const buffer = new MessageBuffer(100);
     const msg1 = makeGroupMessage({ id: "msg-1", group_id: "group-a" });

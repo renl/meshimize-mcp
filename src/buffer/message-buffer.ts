@@ -16,6 +16,11 @@ export class MessageBuffer {
   private maxPerChannel: number;
 
   constructor(maxPerChannel: number = 1000) {
+    if (!Number.isFinite(maxPerChannel) || !Number.isInteger(maxPerChannel) || maxPerChannel < 0) {
+      throw new RangeError(
+        `maxPerChannel must be a finite non-negative integer, got: ${maxPerChannel}`,
+      );
+    }
     this.maxPerChannel = maxPerChannel;
   }
 
@@ -27,16 +32,18 @@ export class MessageBuffer {
       this.groupMessages.set(groupId, buffer);
     }
     buffer.push(message);
-    while (buffer.length > this.maxPerChannel) {
-      buffer.shift();
+    const overflow = buffer.length - this.maxPerChannel;
+    if (overflow > 0) {
+      buffer.splice(0, overflow);
     }
   }
 
   /** Appends a direct message. Evicts oldest if over capacity. */
   addDirectMessage(message: DirectMessageDataResponse): void {
     this.directMessages.push(message);
-    while (this.directMessages.length > this.maxPerChannel) {
-      this.directMessages.shift();
+    const overflow = this.directMessages.length - this.maxPerChannel;
+    if (overflow > 0) {
+      this.directMessages.splice(0, overflow);
     }
   }
 
@@ -53,7 +60,7 @@ export class MessageBuffer {
     options?: {
       afterMessageId?: string;
       limit?: number;
-      messageType?: string;
+      messageType?: MessageDataResponse["message_type"];
       parentMessageId?: string;
       unanswered?: boolean;
     },
@@ -92,7 +99,7 @@ export class MessageBuffer {
     }
 
     if (options?.limit !== undefined) {
-      result = result.slice(0, options.limit);
+      result = result.slice(0, Math.max(0, options.limit));
     }
 
     return result;
@@ -114,7 +121,7 @@ export class MessageBuffer {
     }
 
     if (options?.limit !== undefined) {
-      result = result.slice(0, options.limit);
+      result = result.slice(0, Math.max(0, options.limit));
     }
 
     return result;

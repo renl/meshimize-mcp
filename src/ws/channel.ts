@@ -31,8 +31,17 @@ export class Channel {
     this.socket = socket;
   }
 
+  /** Resets channel state to closed without sending phx_leave. Used by socket on disconnect. */
+  resetState(): void {
+    this.state = "closed";
+    this.joinRef = null;
+  }
+
   /** Join the channel — sends phx_join, returns promise that resolves on ok reply. */
   async join(): Promise<Record<string, unknown>> {
+    if (this.state === "joining" || this.state === "joined") {
+      throw new Error(`Channel "${this.topic}" is already ${this.state}`);
+    }
     this.state = "joining";
     this.joinRef = this.socket.makeRef();
     const ref = this.socket.makeRef();
@@ -44,7 +53,12 @@ export class Channel {
         return reply.response;
       } else {
         this.state = "errored";
-        throw new Error(JSON.stringify(reply.response));
+        const response = reply.response as Record<string, unknown>;
+        const reason = typeof response.reason === "string" ? response.reason : undefined;
+        const details = reason ?? JSON.stringify(reply.response);
+        throw new Error(
+          `Channel join failed for topic "${this.topic}" | status="${reply.status}" | ${reason ? `reason="${reason}"` : `details=${details}`}`,
+        );
       }
     } catch (err) {
       if (this.state === "joining") {
