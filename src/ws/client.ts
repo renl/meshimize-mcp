@@ -1,0 +1,322 @@
+/**
+ * PhoenixSocket — Custom Phoenix Channels v2 wire protocol WebSocket client.
+ *
+ * Generic protocol client. Does NOT import or reference any Meshimize domain types
+ * (MessageBuffer, MessageDataResponse, etc.). Domain wiring happens in a later slice.
+ *
+ * Wire format: [join_ref, ref, topic, event, payload] — 5-element JSON arrays.
+ */
+
+import WebSocket from "ws";
+import type { PhoenixMessage, PhoenixReplyPayload } from "../types/channels.js";
+import { Channel } from "./channel.js";
+import type { SocketAdapter } from "./channel.js";
+
+export type ConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting";
+
+export interface PhoenixSocketOptions {
+  heartbeatIntervalMs?: number; // default 30000
+  reconnectIntervalMs?: number; // default 5000
+  maxReconnectAttempts?: number; // default 10
+  logger?: (level: "info" | "warn" | "error", msg: string) => void;
+  onStateChange?: (state: ConnectionState) => void;
+}
+
+export class PhoenixSocket implements SocketAdapter {
+  private url: string;
+  private ws: WebSocket | null = null;
+  private state: ConnectionState = "disconnected";
+  private refCounter: number = 0;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private pendingHeartbeatRef: string | null = null;
+  private channels: Map<string, Channel> = new Map();
+  private pendingReplies: Map<string, (reply: PhoenixReplyPayload) => void> = new Map();
+  private pendingRejects: Map<string, (err: Error) => void> = new Map();
+  private reconnectAttempts: number = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private intentionalDisconnect: boolean = false;
+
+  private readonly heartbeatIntervalMs: number;
+  private readonly reconnectIntervalMs: number;
+  private readonly maxReconnectAttempts: number;
+  private readonly logger: (level: "info" | "warn" | "error", msg: string) => void;
+
+  public onStateChange?: (state: ConnectionState) => void;
+
+  constructor(url: string, options?: PhoenixSocketOptions) {
+    this.url = url;
+    this.heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 30000;
+    this.reconnectIntervalMs = options?.reconnectIntervalMs ?? 5000;
+    this.maxReconnectAttempts = options?.maxReconnectAttempts ?? 10;
+    this.logger = options?.logger ?? ((_level, msg) => console.error(msg));
+    this.onStateChange = options?.onStateChange;
+  }
+
+  /** Opens the WebSocket connection. Resolves on open, rejects on error/close before open. */
+  connect(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.intentionalDisconnect = false;
+      this.setState("connecting");
+
+      this.ws = new WebSocket(this.url);
+
+      this.ws.on("open", () => {
+        this.setState("connected");
+        this.reconnectAttempts = 0;
+        this.startHeartbeat();
+        resolve();
+      });
+
+      this.ws.on("message", (data: WebSocket.Data) => {
+        this.handleMessage(data);
+      });
+
+      this.ws.on("close", () => {
+        this.stopHeartbeat();
+
+        if (this.state === "connecting") {
+          // Connection failed before open
+          this.setState("disconnected");
+          reject(new Error("WebSocket closed before connection established"));
+          return;
+        }
+
+        if (!this.intentionalDisconnect) {
+          this.attemptReconnect();
+        } else {
+          this.setState("disconnected");
+        }
+      });
+
+      this.ws.on("error", (err: Error) => {
+        this.logger("error", `WebSocket error: ${err.message}`);
+        if (this.state === "connecting") {
+          this.setState("disconnected");
+          reject(err);
+        }
+      });
+    });
+  }
+
+  /** Gracefully disconnects: sends phx_leave for all joined channels, stops heartbeat, closes socket. */
+  disconnect(): void {
+    this.intentionalDisconnect = true;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Send phx_leave for all joined channels
+    for (const channel of this.channels.values()) {
+      if (channel.getState() === "joined") {
+        const ref = this.makeRef();
+        const message: PhoenixMessage = [
+          channel.getJoinRef(),
+          ref,
+          channel.getTopic(),
+          "phx_leave",
+          {},
+        ];
+        this.send(message);
+      }
+    }
+
+    this.stopHeartbeat();
+
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+
+    this.setState("disconnected");
+  }
+
+  /** Returns the current connection state. */
+  getState(): ConnectionState {
+    return this.state;
+  }
+
+  /** Creates or returns an existing Channel for the given topic. Does NOT auto-join. */
+  channel(topic: string): Channel {
+    let ch = this.channels.get(topic);
+    if (!ch) {
+      ch = new Channel(topic, this);
+      this.channels.set(topic, ch);
+    }
+    return ch;
+  }
+
+  // --- SocketAdapter implementation ---
+
+  /** Generates a monotonically incrementing ref string. */
+  makeRef(): string {
+    this.refCounter++;
+    return this.refCounter.toString();
+  }
+
+  /** Sends phx_join for a channel and returns a promise that resolves with the reply. */
+  sendJoin(joinRef: string, ref: string, topic: string): Promise<PhoenixReplyPayload> {
+    const message: PhoenixMessage = [joinRef, ref, topic, "phx_join", {}];
+    return this.pushWithReply(ref, message);
+  }
+
+  /** Sends phx_leave for a channel and returns a promise that resolves with the reply. */
+  sendLeave(joinRef: string | null, ref: string, topic: string): Promise<PhoenixReplyPayload> {
+    const message: PhoenixMessage = [joinRef, ref, topic, "phx_leave", {}];
+    return this.pushWithReply(ref, message);
+  }
+
+  // --- Internal methods ---
+
+  private send(message: PhoenixMessage): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(message));
+    }
+  }
+
+  private pushWithReply(ref: string, message: PhoenixMessage): Promise<PhoenixReplyPayload> {
+    return new Promise<PhoenixReplyPayload>((resolve, reject) => {
+      this.pendingReplies.set(ref, resolve);
+      this.pendingRejects.set(ref, reject);
+      this.send(message);
+    });
+  }
+
+  private handleMessage(data: WebSocket.Data): void {
+    let parsed: PhoenixMessage;
+    try {
+      parsed = JSON.parse(data.toString()) as PhoenixMessage;
+    } catch {
+      this.logger("error", "Failed to parse incoming WebSocket message");
+      return;
+    }
+
+    const [, ref, topic, event, payload] = parsed;
+
+    if (event === "phx_reply") {
+      this.handleReply(ref, payload as PhoenixReplyPayload);
+      return;
+    }
+
+    if (event === "phx_error") {
+      this.handleChannelError(topic);
+      return;
+    }
+
+    if (event === "phx_close") {
+      this.handleChannelClose(topic);
+      return;
+    }
+
+    // Route server push events to the channel
+    const channel = this.channels.get(topic);
+    if (channel) {
+      channel.trigger(event, payload);
+    }
+  }
+
+  private handleReply(ref: string | null, payload: PhoenixReplyPayload): void {
+    if (!ref) return;
+
+    // Check if this is a heartbeat reply
+    if (this.pendingHeartbeatRef === ref) {
+      this.pendingHeartbeatRef = null;
+    }
+
+    const resolve = this.pendingReplies.get(ref);
+    if (resolve) {
+      this.pendingReplies.delete(ref);
+      this.pendingRejects.delete(ref);
+      resolve(payload);
+    }
+  }
+
+  private handleChannelError(topic: string): void {
+    const channel = this.channels.get(topic);
+    if (channel) {
+      channel.trigger("phx_error", {});
+    }
+  }
+
+  private handleChannelClose(topic: string): void {
+    const channel = this.channels.get(topic);
+    if (channel) {
+      channel.trigger("phx_close", {});
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      // If a pending heartbeat wasn't acknowledged, connection is dead
+      if (this.pendingHeartbeatRef !== null) {
+        this.logger("warn", "Heartbeat timeout — connection appears dead");
+        this.pendingHeartbeatRef = null;
+        if (this.ws) {
+          this.ws.close();
+        }
+        return;
+      }
+
+      const ref = this.makeRef();
+      this.pendingHeartbeatRef = ref;
+      const message: PhoenixMessage = [null, ref, "phoenix", "heartbeat", {}];
+      this.send(message);
+    }, this.heartbeatIntervalMs);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.pendingHeartbeatRef = null;
+  }
+
+  private attemptReconnect(): void {
+    if (this.intentionalDisconnect) return;
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.logger("error", `Max reconnect attempts (${this.maxReconnectAttempts}) reached`);
+      this.setState("disconnected");
+      return;
+    }
+
+    this.setState("reconnecting");
+    this.reconnectAttempts++;
+    const delay = this.reconnectIntervalMs * this.reconnectAttempts;
+
+    this.reconnectTimer = setTimeout(async () => {
+      try {
+        await this.connect();
+        // Re-join all channels that were previously joined
+        const rejoinPromises: Promise<unknown>[] = [];
+        for (const channel of this.channels.values()) {
+          if (
+            channel.getState() === "joined" ||
+            channel.getState() === "errored" ||
+            channel.getState() === "joining"
+          ) {
+            rejoinPromises.push(
+              channel.rejoin().catch((err: unknown) => {
+                const msg = err instanceof Error ? err.message : String(err);
+                this.logger("error", `Failed to rejoin channel ${channel.getTopic()}: ${msg}`);
+              }),
+            );
+          }
+        }
+        await Promise.all(rejoinPromises);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger("error", `Reconnect attempt ${this.reconnectAttempts} failed: ${msg}`);
+        // attemptReconnect will be called again by the close handler
+      }
+    }, delay);
+  }
+
+  private setState(newState: ConnectionState): void {
+    this.state = newState;
+    this.onStateChange?.(newState);
+  }
+}
