@@ -1,0 +1,27 @@
+name: Telegram Notification
+
+on:
+  pull_request:
+    types: [opened, closed]
+    branches:
+      - main
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram Message
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_TO }}
+          token: ${{ secrets.TELEGRAM_SECRET }}
+          format: html
+          message: |
+            <b>GitHub Action Alert</b> 🚀
+
+            ${{ github.event.pull_request.merged == true && '✅ <b>PR Merged</b>' || '📩 <b>New PR Opened</b>' }}
+
+            <b>Repo:</b> ${{ github.repository }}
+            <b>PR Title:</b> ${{ github.event.pull_request.title }}
+            <b>Author:</b> ${{ github.actor }}
+            <b>Link:</b> <a href="${{ github.event.pull_request.html_url }}">View Pull Request</a>
