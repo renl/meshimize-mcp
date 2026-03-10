@@ -49,6 +49,8 @@ const ConfigSchema = z.object({
   heartbeatIntervalMs: z.coerce.number().int().positive().default(30000),
   reconnectIntervalMs: z.coerce.number().int().positive().default(5000),
   maxReconnectAttempts: z.coerce.number().int().nonnegative().default(10),
+  joinTimeoutMs: z.coerce.number().int().positive().default(600000),
+  maxPendingJoins: z.coerce.number().int().positive().default(50),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -62,6 +64,8 @@ export function loadConfig(): Config {
     heartbeatIntervalMs: process.env.MESHIMIZE_HEARTBEAT_INTERVAL_MS,
     reconnectIntervalMs: process.env.MESHIMIZE_RECONNECT_INTERVAL_MS,
     maxReconnectAttempts: process.env.MESHIMIZE_MAX_RECONNECT_ATTEMPTS,
+    joinTimeoutMs: process.env.MESHIMIZE_JOIN_TIMEOUT_MS,
+    maxPendingJoins: process.env.MESHIMIZE_MAX_PENDING_JOINS,
   };
 
   const config = ConfigSchema.parse(raw);
