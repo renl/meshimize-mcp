@@ -131,7 +131,7 @@ export class Channel {
 
     const handlers = this.eventHandlers.get(event);
     if (!handlers) return;
-    for (const handler of handlers) {
+    for (const handler of handlers.slice()) {
       handler(payload);
     }
   }

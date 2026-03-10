@@ -153,6 +153,7 @@ export class PhoenixSocket implements SocketAdapter {
     }
 
     this.stopHeartbeat();
+    this.rejectAllPending();
 
     if (this.ws) {
       this.ws.close();
