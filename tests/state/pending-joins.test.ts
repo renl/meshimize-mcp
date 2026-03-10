@@ -92,6 +92,7 @@ describe("PendingJoinMap", () => {
     });
 
     afterEach(() => {
+      map?.dispose();
       vi.useRealTimers();
     });
 
@@ -111,6 +112,7 @@ describe("PendingJoinMap", () => {
     });
 
     afterEach(() => {
+      map?.dispose();
       vi.useRealTimers();
     });
 
@@ -131,6 +133,7 @@ describe("PendingJoinMap", () => {
     });
 
     afterEach(() => {
+      map?.dispose();
       vi.useRealTimers();
     });
 
@@ -175,6 +178,7 @@ describe("PendingJoinMap", () => {
     });
 
     afterEach(() => {
+      map?.dispose();
       vi.useRealTimers();
     });
 

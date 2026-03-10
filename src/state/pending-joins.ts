@@ -22,6 +22,7 @@ class PendingJoinMapImpl implements PendingJoinMap {
     this.joinTimeoutMs = config.joinTimeoutMs;
     this.maxPendingJoins = config.maxPendingJoins;
     this.pruneInterval = setInterval(() => this.pruneExpired(), 60_000);
+    this.pruneInterval.unref?.();
   }
 
   add(group: PendingJoinRequest["group"]): PendingJoinRequest {
