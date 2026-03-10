@@ -58,7 +58,14 @@ async function main(): Promise<void> {
   const groups = await api.getMyGroups({ limit: 100 });
 
   // 11. Helper: set up a group channel with message handler
+  //     Uses a Set to guard against duplicate handler registration
+  //     (e.g., if group_joined fires for an already-joined group).
+  const joinedGroups = new Set<string>();
+
   async function setupGroupChannel(groupId: string): Promise<void> {
+    if (joinedGroups.has(groupId)) return;
+    joinedGroups.add(groupId);
+
     const ch = socket.channel(`group:${groupId}`);
     ch.on("new_message", (payload: unknown) => {
       buffer.addGroupMessage(groupId, payload as MessageDataResponse);
@@ -87,6 +94,7 @@ async function main(): Promise<void> {
 
   accountChannel.on("group_left", (payload: unknown) => {
     const { group_id } = payload as { group_id: string };
+    joinedGroups.delete(group_id);
     const ch = socket.channel(`group:${group_id}`);
     ch.leave().catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
