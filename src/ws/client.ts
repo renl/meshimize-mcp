@@ -60,13 +60,23 @@ export class PhoenixSocket implements SocketAdapter {
     if (this.state === "connecting") {
       return Promise.reject(new Error("Connection already in progress"));
     }
+
+    // Clear any pending reconnect timer to prevent duplicate connections
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+      this.reconnectAttempts = 0;
+    }
+
     return new Promise<void>((resolve, reject) => {
       this.intentionalDisconnect = false;
       this.setState("connecting");
 
       this.ws = new WebSocket(this.url);
+      const ws = this.ws;
 
       this.ws.on("open", () => {
+        if (ws !== this.ws) return;
         this.setState("connected");
         this.reconnectAttempts = 0;
         this.startHeartbeat();
@@ -74,10 +84,12 @@ export class PhoenixSocket implements SocketAdapter {
       });
 
       this.ws.on("message", (data: WebSocket.Data) => {
+        if (ws !== this.ws) return;
         this.handleMessage(data);
       });
 
       this.ws.on("close", () => {
+        if (ws !== this.ws) return;
         this.stopHeartbeat();
         this.ws = null;
         this.rejectAllPending();
@@ -101,6 +113,7 @@ export class PhoenixSocket implements SocketAdapter {
       });
 
       this.ws.on("error", (err: Error) => {
+        if (ws !== this.ws) return;
         this.logger("error", `WebSocket error: ${err.message}`);
         if (this.state === "connecting") {
           this.setState("disconnected");

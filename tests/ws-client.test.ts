@@ -502,4 +502,83 @@ describe("PhoenixSocket", () => {
 
     expect(ch.getState()).toBe("closed");
   });
+
+  it("ignores events from a stale socket after a new connect()", async () => {
+    // Track all mock sockets created
+    const allMockSockets: ReturnType<typeof createMockWS>[] = [];
+
+    MockWebSocket.mockImplementation(() => {
+      const ws = createMockWS();
+      allMockSockets.push(ws);
+      return ws;
+    });
+
+    const socket = new PhoenixSocket("wss://example.com/ws?token=key&vsn=2.0.0", {
+      heartbeatIntervalMs: 60000,
+      logger: () => {},
+    });
+
+    // First connection
+    const connectPromise1 = socket.connect();
+    const firstWS = allMockSockets[0];
+
+    // Simulate error on first socket — sets state to "disconnected", rejects promise
+    firstWS._emit("error", new Error("Connection refused"));
+    await connectPromise1.catch(() => {});
+
+    expect(socket.getState()).toBe("disconnected");
+
+    // Second connection before first socket's close fires
+    const connectPromise2 = socket.connect();
+    const secondWS = allMockSockets[1];
+
+    // Now the FIRST socket's close fires (stale) — should be ignored
+    firstWS._emit("close");
+
+    // Second socket opens successfully
+    secondWS._emit("open");
+    await connectPromise2;
+
+    // The new connection should be intact — not disrupted by the stale close
+    expect(socket.getState()).toBe("connected");
+  });
+
+  it("clears pending reconnect timer when connect() is called manually", async () => {
+    let connectCount = 0;
+
+    MockWebSocket.mockImplementation(() => {
+      connectCount++;
+      mockWS = createMockWS();
+      return mockWS;
+    });
+
+    const socket = new PhoenixSocket("wss://example.com/ws?token=key&vsn=2.0.0", {
+      heartbeatIntervalMs: 60000,
+      reconnectIntervalMs: 5000,
+      maxReconnectAttempts: 5,
+      logger: () => {},
+    });
+
+    // First connection
+    const connectPromise = socket.connect();
+    mockWS._emit("open");
+    await connectPromise;
+    expect(connectCount).toBe(1);
+
+    // Simulate unexpected close — triggers reconnect timer
+    mockWS._emit("close");
+    expect(socket.getState()).toBe("reconnecting");
+
+    // Manually call connect() before the reconnect timer fires
+    const manualConnectPromise = socket.connect();
+    mockWS._emit("open");
+    await manualConnectPromise;
+
+    expect(connectCount).toBe(2);
+    expect(socket.getState()).toBe("connected");
+
+    // Advance time well past the reconnect delay — no extra connection should be created
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(connectCount).toBe(2);
+  });
 });
