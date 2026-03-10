@@ -92,7 +92,7 @@ export async function askQuestionHandler(
 }
 
 /**
- * Retrieves unanswered questions from Q&A groups where you are a responder.
+ * Retrieves unanswered questions from Q&A groups where you are an owner or responder.
  * Reads from local buffer (includes content). Falls back to server API (metadata only).
  */
 export async function getPendingQuestionsHandler(
@@ -120,37 +120,29 @@ export async function getPendingQuestionsHandler(
     (g) => g.type === "qa" && (g.my_role === "owner" || g.my_role === "responder"),
   );
 
-  const allQuestions: Array<{
-    group_id: string;
-    group_name: string;
-    questions: unknown[];
-  }> = [];
-
-  for (const group of qaGroups) {
-    const buffered = deps.buffer.getGroupMessages(group.id, {
-      unanswered: true,
-      limit: args.limit,
-    });
-    if (buffered.length > 0) {
-      allQuestions.push({
-        group_id: group.id,
-        group_name: group.name,
-        questions: buffered,
+  const perGroupResults = await Promise.all(
+    qaGroups.map(async (group) => {
+      const buffered = deps.buffer.getGroupMessages(group.id, {
+        unanswered: true,
+        limit: args.limit,
       });
-    } else {
+      if (buffered.length > 0) {
+        return { group_id: group.id, group_name: group.name, questions: buffered as unknown[] };
+      }
       const result = await deps.api.getMessages(group.id, {
         unanswered: true,
         limit: args.limit,
       });
       if (result.data.length > 0) {
-        allQuestions.push({
-          group_id: group.id,
-          group_name: group.name,
-          questions: result.data,
-        });
+        return { group_id: group.id, group_name: group.name, questions: result.data as unknown[] };
       }
-    }
-  }
+      return null;
+    }),
+  );
+
+  const allQuestions = perGroupResults.filter(
+    (r): r is { group_id: string; group_name: string; questions: unknown[] } => r !== null,
+  );
 
   return { groups: allQuestions };
 }
@@ -259,7 +251,7 @@ export function registerAskQuestion(server: McpServer, deps: ToolDependencies): 
 export function registerGetPendingQuestions(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "get_pending_questions",
-    "Retrieve unanswered questions from Q&A groups where you are a responder. Reads from local buffer (includes content). Falls back to server API (metadata only).",
+    "Retrieve unanswered questions from Q&A groups where you are an owner or responder. Reads from local buffer (includes content). Falls back to server API (metadata only).",
     {
       group_id: z
         .string()

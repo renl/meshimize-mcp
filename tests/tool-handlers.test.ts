@@ -315,6 +315,143 @@ describe("tool handlers", () => {
     expect(deps.api.getMessages).not.toHaveBeenCalled();
   });
 
+  it("get_pending_questions (cross-group) aggregates from buffer and API, filtering to QA owner/responder", async () => {
+    // Mock getMyGroups returning mixed groups: QA owner, QA responder, QA member (excluded), discussion (excluded)
+    const mockGroups = {
+      data: [
+        {
+          id: "qa-owner",
+          name: "QA Owned",
+          description: "Owned QA group",
+          type: "qa" as const,
+          visibility: "public" as const,
+          my_role: "owner" as const,
+          owner: { id: "me", display_name: "Me", verified: true },
+          member_count: 5,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "qa-responder",
+          name: "QA Responding",
+          description: "Responder QA group",
+          type: "qa" as const,
+          visibility: "public" as const,
+          my_role: "responder" as const,
+          owner: { id: "other", display_name: "Other", verified: true },
+          member_count: 10,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "qa-member",
+          name: "QA Member Only",
+          description: "Member QA group",
+          type: "qa" as const,
+          visibility: "public" as const,
+          my_role: "member" as const,
+          owner: { id: "other2", display_name: "Other2", verified: false },
+          member_count: 20,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "discussion-group",
+          name: "Discussion",
+          description: "A discussion group",
+          type: "open_discussion" as const,
+          visibility: "public" as const,
+          my_role: "member" as const,
+          owner: { id: "other3", display_name: "Other3", verified: false },
+          member_count: 15,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      meta: { has_more: false, next_cursor: null, count: 4 },
+    };
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockGroups);
+
+    // qa-owner: buffer returns data (buffer-first path)
+    // qa-responder: buffer returns empty, API returns data (API fallback path)
+    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockImplementation(
+      (groupId: string) => {
+        if (groupId === "qa-owner") {
+          return [
+            {
+              id: "q-buf-1",
+              group_id: "qa-owner",
+              content: "Buffered question?",
+              message_type: "question" as const,
+              parent_message_id: null,
+              sender: { id: "s-1", display_name: "Asker1", verified: false },
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    (deps.api.getMessages as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [
+        {
+          id: "q-api-1",
+          group_id: "qa-responder",
+          message_type: "question" as const,
+          parent_message_id: null,
+          sender: { id: "s-2", display_name: "Asker2", verified: false },
+          created_at: "2026-01-01T00:00:01Z",
+        },
+      ],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+
+    const result = await getPendingQuestionsHandler({ limit: 10 }, deps);
+
+    // Should only include qa-owner and qa-responder (not qa-member or discussion)
+    expect("groups" in result).toBe(true);
+    if ("groups" in result) {
+      expect(result.groups).toHaveLength(2);
+      expect(result.groups.map((g) => g.group_id).sort()).toEqual(["qa-owner", "qa-responder"]);
+
+      // qa-owner came from buffer
+      const ownerGroup = result.groups.find((g) => g.group_id === "qa-owner")!;
+      expect(ownerGroup.group_name).toBe("QA Owned");
+      expect(ownerGroup.questions).toHaveLength(1);
+
+      // qa-responder came from API
+      const responderGroup = result.groups.find((g) => g.group_id === "qa-responder")!;
+      expect(responderGroup.group_name).toBe("QA Responding");
+      expect(responderGroup.questions).toHaveLength(1);
+    }
+
+    // Should NOT have fetched API messages for qa-owner (buffer had data)
+    expect(deps.api.getMessages).toHaveBeenCalledTimes(1);
+    expect(deps.api.getMessages).toHaveBeenCalledWith("qa-responder", {
+      unanswered: true,
+      limit: 10,
+    });
+  });
+
+  it("leave_group clears buffer even if channel.leave() throws", async () => {
+    (deps.api.leaveGroup as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+    const mockChannel = {
+      join: vi.fn(),
+      leave: vi.fn().mockRejectedValue(new Error("WebSocket disconnected")),
+    };
+    (deps.socket.channel as ReturnType<typeof vi.fn>).mockReturnValue(mockChannel);
+
+    const result = await leaveGroupHandler({ group_id: "group-1" }, deps);
+
+    expect(result.success).toBe(true);
+    expect(deps.api.leaveGroup).toHaveBeenCalledWith("group-1");
+    expect(mockChannel.leave).toHaveBeenCalled();
+    // Buffer should be cleared despite channel.leave() throwing
+    expect(deps.buffer.clearGroup).toHaveBeenCalledWith("group-1");
+  });
+
   it("send_direct_message calls api.sendDirectMessage with recipient_account_id", async () => {
     const mockResult = {
       data: {

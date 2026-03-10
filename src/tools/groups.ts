@@ -48,8 +48,13 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
 export async function leaveGroupHandler(args: { group_id: string }, deps: ToolDependencies) {
   await deps.api.leaveGroup(args.group_id);
   const channel = deps.socket.channel(`group:${args.group_id}`);
-  await channel.leave();
-  deps.buffer.clearGroup(args.group_id);
+  try {
+    await channel.leave();
+  } catch {
+    // Ignore WebSocket leave errors — REST leave already succeeded
+  } finally {
+    deps.buffer.clearGroup(args.group_id);
+  }
   return { success: true };
 }
 
