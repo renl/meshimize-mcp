@@ -16,7 +16,7 @@ export async function getMessagesHandler(
   });
 
   if (buffered.length > 0) {
-    return { messages: buffered, source: "buffer" as const };
+    return { messages: buffered, source: "buffer" as const, has_more: false };
   }
 
   const result = await deps.api.getMessages(args.group_id, {
