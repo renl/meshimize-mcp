@@ -48,7 +48,17 @@ export class PhoenixSocket implements SocketAdapter {
     this.heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 30000;
     this.reconnectIntervalMs = options?.reconnectIntervalMs ?? 5000;
     this.maxReconnectAttempts = options?.maxReconnectAttempts ?? 10;
-    this.logger = options?.logger ?? ((_level, msg) => console.error(msg));
+    // ESLint no-console only allows console.error and console.warn (stdout reserved for MCP stdio),
+    // so info-level messages are routed to console.error as a fallback.
+    this.logger =
+      options?.logger ??
+      ((level, msg) => {
+        if (level === "warn") {
+          console.warn(msg);
+        } else {
+          console.error(msg);
+        }
+      });
     this.onStateChange = options?.onStateChange;
   }
 
@@ -244,7 +254,7 @@ export class PhoenixSocket implements SocketAdapter {
       return;
     }
 
-    const [, ref, topic, event, payload] = parsed as PhoenixMessage;
+    const [joinRef, ref, topic, event, payload] = parsed as PhoenixMessage;
 
     if (event === "phx_reply") {
       this.handleReply(ref, payload as PhoenixReplyPayload);
@@ -252,18 +262,27 @@ export class PhoenixSocket implements SocketAdapter {
     }
 
     if (event === "phx_error") {
-      this.handleChannelError(topic);
+      this.handleChannelError(topic, payload);
       return;
     }
 
     if (event === "phx_close") {
-      this.handleChannelClose(topic);
+      this.handleChannelClose(topic, payload);
       return;
     }
 
-    // Route server push events to the channel
+    // Route server push events to the channel, validating join_ref to drop stale pushes.
+    // Lifecycle events (phx_error, phx_close) and phx_reply are authoritative and always delivered.
     const channel = this.channels.get(topic);
     if (channel) {
+      if (joinRef !== null && joinRef !== channel.getJoinRef()) {
+        this.logger(
+          "warn",
+          `Dropping stale push for topic "${topic}" event "${event}": ` +
+            `join_ref ${joinRef} does not match current ${channel.getJoinRef()}`,
+        );
+        return;
+      }
       channel.trigger(event, payload);
     }
   }
@@ -284,17 +303,17 @@ export class PhoenixSocket implements SocketAdapter {
     }
   }
 
-  private handleChannelError(topic: string): void {
+  private handleChannelError(topic: string, payload: unknown = {}): void {
     const channel = this.channels.get(topic);
     if (channel) {
-      channel.trigger("phx_error", {});
+      channel.trigger("phx_error", payload);
     }
   }
 
-  private handleChannelClose(topic: string): void {
+  private handleChannelClose(topic: string, payload: unknown = {}): void {
     const channel = this.channels.get(topic);
     if (channel) {
-      channel.trigger("phx_close", {});
+      channel.trigger("phx_close", payload);
     }
   }
 
