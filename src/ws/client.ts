@@ -54,6 +54,12 @@ export class PhoenixSocket implements SocketAdapter {
 
   /** Opens the WebSocket connection. Resolves on open, rejects on error/close before open. */
   connect(): Promise<void> {
+    if (this.state === "connected") {
+      return Promise.resolve();
+    }
+    if (this.state === "connecting") {
+      return Promise.reject(new Error("Connection already in progress"));
+    }
     return new Promise<void>((resolve, reject) => {
       this.intentionalDisconnect = false;
       this.setState("connecting");
@@ -324,11 +330,18 @@ export class PhoenixSocket implements SocketAdapter {
       return;
     }
 
+    // Clear any existing reconnect timer to prevent duplicate concurrent connect attempts
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     this.setState("reconnecting");
     this.reconnectAttempts++;
     const delay = this.reconnectIntervalMs * this.reconnectAttempts;
 
     this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
       try {
         await this.connect();
         // Re-join all channels that were previously joined
