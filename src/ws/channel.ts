@@ -119,6 +119,16 @@ export class Channel {
 
   /** Called by PhoenixSocket when a message arrives for this channel's topic. */
   trigger(event: string, payload: unknown): void {
+    // Update channel state on server-initiated lifecycle events before firing handlers,
+    // so handlers see the correct state when they run.
+    if (event === "phx_error") {
+      this.state = "errored";
+      this.joinRef = null;
+    } else if (event === "phx_close") {
+      this.state = "closed";
+      this.joinRef = null;
+    }
+
     const handlers = this.eventHandlers.get(event);
     if (!handlers) return;
     for (const handler of handlers) {

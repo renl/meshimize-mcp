@@ -436,4 +436,70 @@ describe("PhoenixSocket", () => {
     expect(logMessages.some((m) => m.includes("Max reconnect attempts"))).toBe(true);
     expect(socket.getState()).toBe("disconnected");
   });
+
+  it("transitions channel state to errored on phx_error from server", async () => {
+    const socket = new PhoenixSocket("wss://example.com/ws?token=key&vsn=2.0.0", {
+      heartbeatIntervalMs: 60000,
+      logger: () => {},
+    });
+
+    const connectPromise = socket.connect();
+    mockWS._emit("open");
+    await connectPromise;
+
+    const ch = socket.channel("group:abc123");
+    const joinPromise = ch.join();
+
+    // Simulate join ok
+    const joinReply: PhoenixMessage = [
+      "1",
+      "2",
+      "group:abc123",
+      "phx_reply",
+      { status: "ok", response: {} } as PhoenixReplyPayload,
+    ];
+    mockWS._emit("message", JSON.stringify(joinReply));
+    await joinPromise;
+
+    expect(ch.getState()).toBe("joined");
+
+    // Simulate server-sent phx_error
+    const errorMsg: PhoenixMessage = ["1", null, "group:abc123", "phx_error", {}];
+    mockWS._emit("message", JSON.stringify(errorMsg));
+
+    expect(ch.getState()).toBe("errored");
+  });
+
+  it("transitions channel state to closed on phx_close from server", async () => {
+    const socket = new PhoenixSocket("wss://example.com/ws?token=key&vsn=2.0.0", {
+      heartbeatIntervalMs: 60000,
+      logger: () => {},
+    });
+
+    const connectPromise = socket.connect();
+    mockWS._emit("open");
+    await connectPromise;
+
+    const ch = socket.channel("group:abc123");
+    const joinPromise = ch.join();
+
+    // Simulate join ok
+    const joinReply: PhoenixMessage = [
+      "1",
+      "2",
+      "group:abc123",
+      "phx_reply",
+      { status: "ok", response: {} } as PhoenixReplyPayload,
+    ];
+    mockWS._emit("message", JSON.stringify(joinReply));
+    await joinPromise;
+
+    expect(ch.getState()).toBe("joined");
+
+    // Simulate server-sent phx_close
+    const closeMsg: PhoenixMessage = ["1", null, "group:abc123", "phx_close", {}];
+    mockWS._emit("message", JSON.stringify(closeMsg));
+
+    expect(ch.getState()).toBe("closed");
+  });
 });
