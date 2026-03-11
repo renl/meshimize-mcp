@@ -67,7 +67,7 @@ describe("PhoenixSocket", () => {
   });
 
   it("connects to URL with token and vsn params", async () => {
-    const url = "wss://api.meshimize.com/api/v1/ws?token=mshz_key_123&vsn=2.0.0";
+    const url = "wss://api.meshimize.com/api/v1/ws/websocket?token=mshz_key_123&vsn=2.0.0";
     const socket = new PhoenixSocket(url, {
       logger: () => {},
     });
