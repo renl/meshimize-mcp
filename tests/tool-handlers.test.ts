@@ -29,7 +29,7 @@ function createTestConfig(): Config {
   return {
     apiKey: "test-key",
     baseUrl: "https://test.meshimize.com",
-    wsUrl: "wss://test.meshimize.com/api/v1/ws",
+    wsUrl: "wss://test.meshimize.com/api/v1/ws/websocket",
     bufferSize: 1000,
     heartbeatIntervalMs: 30000,
     reconnectIntervalMs: 5000,

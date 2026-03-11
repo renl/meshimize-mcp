@@ -9,7 +9,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
   return {
     apiKey: "test-key",
     baseUrl: "https://api.meshimize.com",
-    wsUrl: "wss://api.meshimize.com/api/v1/ws",
+    wsUrl: "wss://api.meshimize.com/api/v1/ws/websocket",
     bufferSize: 1000,
     heartbeatIntervalMs: 30000,
     reconnectIntervalMs: 5000,

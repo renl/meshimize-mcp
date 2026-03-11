@@ -60,7 +60,7 @@ describe("loadConfig", () => {
 
     const config = loadConfig();
 
-    expect(config.wsUrl).toBe("wss://api.meshimize.com/api/v1/ws");
+    expect(config.wsUrl).toBe("wss://api.meshimize.com/api/v1/ws/websocket");
   });
 
   it("should derive wsUrl from baseUrl when http produces ws", () => {
@@ -69,7 +69,7 @@ describe("loadConfig", () => {
 
     const config = loadConfig();
 
-    expect(config.wsUrl).toBe("ws://localhost:4000/api/v1/ws");
+    expect(config.wsUrl).toBe("ws://localhost:4000/api/v1/ws/websocket");
   });
 
   it("should reject baseUrl with a path component", () => {
@@ -95,10 +95,10 @@ describe("loadConfig", () => {
 
   it("should accept valid wsUrl with wss scheme", () => {
     process.env.MESHIMIZE_API_KEY = "mshz_test_key_123";
-    process.env.MESHIMIZE_WS_URL = "wss://api.meshimize.com/api/v1/ws";
+    process.env.MESHIMIZE_WS_URL = "wss://api.meshimize.com/api/v1/ws/websocket";
 
     const config = loadConfig();
 
-    expect(config.wsUrl).toBe("wss://api.meshimize.com/api/v1/ws");
+    expect(config.wsUrl).toBe("wss://api.meshimize.com/api/v1/ws/websocket");
   });
 });

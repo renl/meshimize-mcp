@@ -74,7 +74,7 @@ export function loadConfig(): Config {
   if (!config.wsUrl) {
     const url = new URL(config.baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.pathname = "/api/v1/ws";
+    url.pathname = "/api/v1/ws/websocket";
     config.wsUrl = url.toString();
   }
 
