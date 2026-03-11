@@ -1,10 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ToolDependencies } from "../src/tools/index.js";
 import {
   searchGroupsHandler,
   joinGroupHandler,
   leaveGroupHandler,
   listMyGroupsHandler,
+  approveJoinHandler,
+  rejectJoinHandler,
+  listPendingJoinsHandler,
 } from "../src/tools/groups.js";
 import {
   getMessagesHandler,
@@ -19,6 +22,22 @@ import {
 import type { MeshimizeAPI } from "../src/api/client.js";
 import type { PhoenixSocket } from "../src/ws/client.js";
 import type { MessageBuffer } from "../src/buffer/message-buffer.js";
+import { createPendingJoinMap } from "../src/state/pending-joins.js";
+import type { Config } from "../src/config.js";
+
+function createTestConfig(): Config {
+  return {
+    apiKey: "test-key",
+    baseUrl: "https://test.meshimize.com",
+    wsUrl: "wss://test.meshimize.com/api/v1/ws",
+    bufferSize: 1000,
+    heartbeatIntervalMs: 30000,
+    reconnectIntervalMs: 5000,
+    maxReconnectAttempts: 10,
+    joinTimeoutMs: 600000, // 10 minutes
+    maxPendingJoins: 50,
+  };
+}
 
 function createMockDeps(): ToolDependencies {
   return {
@@ -41,8 +60,27 @@ function createMockDeps(): ToolDependencies {
       getDirectMessages: vi.fn(),
       clearGroup: vi.fn(),
     } as unknown as MessageBuffer,
+    pendingJoins: createPendingJoinMap(createTestConfig()),
   };
 }
+
+const mockGroup = {
+  id: "group-1",
+  name: "Test Group",
+  description: "A test group",
+  type: "qa" as const,
+  visibility: "public" as const,
+  my_role: null,
+  owner: { id: "owner-1", display_name: "Owner", verified: true },
+  member_count: 42,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
+
+const mockSearchResult = {
+  data: [mockGroup],
+  meta: { has_more: false, next_cursor: null, count: 1 },
+};
 
 describe("tool handlers", () => {
   let deps: ToolDependencies;
@@ -51,25 +89,12 @@ describe("tool handlers", () => {
     deps = createMockDeps();
   });
 
+  afterEach(() => {
+    deps.pendingJoins.dispose();
+  });
+
   it("search_groups calls api.searchGroups and returns formatted results", async () => {
-    const mockResult = {
-      data: [
-        {
-          id: "group-1",
-          name: "Test Group",
-          description: "A test group",
-          type: "qa" as const,
-          visibility: "public" as const,
-          my_role: null,
-          owner: { id: "owner-1", display_name: "Owner", verified: true },
-          member_count: 42,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
-        },
-      ],
-      meta: { has_more: false, next_cursor: null, count: 1 },
-    };
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockResult);
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
 
     const result = await searchGroupsHandler({ query: "test", limit: 50 }, deps);
 
@@ -87,7 +112,109 @@ describe("tool handlers", () => {
     });
   });
 
-  it("join_group calls api.joinGroup + socket.channel().join(), returns confirmation", async () => {
+  // --- join_group (rewritten: creates pending request, no server join) ---
+
+  it("join_group creates pending request and returns pending_operator_approval status", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+
+    const result = await joinGroupHandler({ group_id: "group-1" }, deps);
+
+    expect(result.status).toBe("pending_operator_approval");
+    expect(result).toHaveProperty("pending_request_id");
+    expect(result).toHaveProperty("group");
+    if ("group" in result && result.group && typeof result.group === "object") {
+      const group = result.group as Record<string, unknown>;
+      expect(group.id).toBe("group-1");
+      expect(group.name).toBe("Test Group");
+      expect(group.type).toBe("qa");
+      expect(group.owner_name).toBe("Owner");
+      expect(group.owner_verified).toBe(true);
+      expect(group.member_count).toBe(42);
+    }
+    // join_group should NOT call api.joinGroup
+    expect(deps.api.joinGroup).not.toHaveBeenCalled();
+    expect(deps.api.searchGroups).toHaveBeenCalledWith({ limit: 100 });
+  });
+
+  it("join_group returns already_pending for same group_id", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+
+    const first = await joinGroupHandler({ group_id: "group-1" }, deps);
+    const second = await joinGroupHandler({ group_id: "group-1" }, deps);
+
+    expect(first.status).toBe("pending_operator_approval");
+    expect(second.status).toBe("already_pending");
+    expect(second).toHaveProperty("pending_request_id");
+    // Both should reference the same pending_request_id
+    expect((second as { pending_request_id: string }).pending_request_id).toBe(
+      (first as { pending_request_id: string }).pending_request_id,
+    );
+  });
+
+  it("join_group throws error when group not found", async () => {
+    const emptyResult = {
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    };
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(emptyResult);
+
+    await expect(joinGroupHandler({ group_id: "group-nonexistent" }, deps)).rejects.toThrow(
+      "not found",
+    );
+  });
+
+  it("join_group returns already_member when account has a role in the group", async () => {
+    const memberGroup = { ...mockGroup, my_role: "member" as const };
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [memberGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+
+    const result = await joinGroupHandler({ group_id: "group-1" }, deps);
+
+    expect(result.status).toBe("already_member");
+    expect((result as { role: string }).role).toBe("member");
+    // Should NOT create a pending request
+    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
+    // Should NOT call api.joinGroup
+    expect(deps.api.joinGroup).not.toHaveBeenCalled();
+  });
+
+  it("join_group returns error when max pending joins exceeded", async () => {
+    // Create a PendingJoinMap with maxPendingJoins: 1
+    deps.pendingJoins.dispose();
+    const limitedConfig = { ...createTestConfig(), maxPendingJoins: 1 };
+    deps.pendingJoins = createPendingJoinMap(limitedConfig);
+
+    const mockGroup2 = {
+      ...mockGroup,
+      id: "group-2",
+      name: "Second Group",
+    };
+
+    // First call succeeds
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    await joinGroupHandler({ group_id: "group-1" }, deps);
+
+    // Second call should fail because max is 1
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup2],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+
+    await expect(joinGroupHandler({ group_id: "group-2" }, deps)).rejects.toThrow(
+      "maximum number of pending requests",
+    );
+  });
+
+  // --- approve_join ---
+
+  it("approve_join completes join via REST and returns joined status", async () => {
+    // First create a pending request
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    await joinGroupHandler({ group_id: "group-1" }, deps);
+
+    // Mock the REST join
     const mockJoinResult = {
       data: {
         group_id: "group-1",
@@ -98,18 +225,209 @@ describe("tool handlers", () => {
     };
     (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockResolvedValue(mockJoinResult);
 
-    const mockChannel = { join: vi.fn().mockResolvedValue({}), leave: vi.fn() };
-    (deps.socket.channel as ReturnType<typeof vi.fn>).mockReturnValue(mockChannel);
+    const result = await approveJoinHandler({ group_id: "group-1" }, deps);
 
-    const result = await joinGroupHandler({ group_id: "group-1" }, deps);
-
-    expect(result.success).toBe(true);
-    expect(result.role).toBe("member");
-    expect(result.group_id).toBe("group-1");
+    expect(result.status).toBe("joined");
+    expect((result as { group_id: string }).group_id).toBe("group-1");
+    expect((result as { role: string }).role).toBe("member");
     expect(deps.api.joinGroup).toHaveBeenCalledWith("group-1");
-    expect(deps.socket.channel).toHaveBeenCalledWith("group:group-1");
-    expect(mockChannel.join).toHaveBeenCalled();
+    // Pending request should be removed
+    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
   });
+
+  it("approve_join throws error when no pending request", async () => {
+    await expect(approveJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow(
+      "No pending join request",
+    );
+  });
+
+  it("approve_join throws error after request expires", async () => {
+    vi.useFakeTimers();
+    try {
+      (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+      await joinGroupHandler({ group_id: "group-1" }, deps);
+
+      // Advance past expiry (>600000ms = 10 minutes)
+      vi.advanceTimersByTime(600001);
+
+      await expect(approveJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow(
+        "No pending join request",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("approve_join propagates REST API errors", async () => {
+    // Create pending request
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    await joinGroupHandler({ group_id: "group-1" }, deps);
+
+    // Mock REST join to throw
+    (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Forbidden"));
+
+    await expect(approveJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow("Forbidden");
+  });
+
+  it("approve_join does not make WebSocket calls", async () => {
+    // Create pending request
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    await joinGroupHandler({ group_id: "group-1" }, deps);
+
+    // Mock REST join success
+    const mockJoinResult = {
+      data: {
+        group_id: "group-1",
+        account_id: "account-1",
+        role: "member" as const,
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    };
+    (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockResolvedValue(mockJoinResult);
+
+    await approveJoinHandler({ group_id: "group-1" }, deps);
+
+    // socket.channel should NOT have been called
+    expect(deps.socket.channel).not.toHaveBeenCalled();
+  });
+
+  // --- reject_join ---
+
+  it("reject_join removes pending request and returns rejected status", async () => {
+    // Create pending request
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    await joinGroupHandler({ group_id: "group-1" }, deps);
+
+    const result = await rejectJoinHandler({ group_id: "group-1" }, deps);
+
+    expect(result.status).toBe("rejected");
+    expect((result as { group_id: string }).group_id).toBe("group-1");
+    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
+  });
+
+  it("reject_join throws error when no pending request", async () => {
+    await expect(rejectJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow(
+      "No pending join request",
+    );
+  });
+
+  // --- list_pending_joins ---
+
+  it("list_pending_joins returns all pending requests", async () => {
+    const mockGroup2 = {
+      ...mockGroup,
+      id: "group-2",
+      name: "Second Group",
+    };
+    const twoGroupsResult = {
+      data: [mockGroup, mockGroup2],
+      meta: { has_more: false, next_cursor: null, count: 2 },
+    };
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(twoGroupsResult);
+
+    await joinGroupHandler({ group_id: "group-1" }, deps);
+    await joinGroupHandler({ group_id: "group-2" }, deps);
+
+    const result = await listPendingJoinsHandler({} as Record<string, never>, deps);
+
+    expect(result.count).toBe(2);
+    expect(result.pending_requests).toHaveLength(2);
+    const groupIds = result.pending_requests.map((p) => p.group_id).sort();
+    expect(groupIds).toEqual(["group-1", "group-2"]);
+  });
+
+  it("list_pending_joins excludes expired requests", async () => {
+    vi.useFakeTimers();
+    try {
+      (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+      await joinGroupHandler({ group_id: "group-1" }, deps);
+
+      // Advance past expiry
+      vi.advanceTimersByTime(600001);
+
+      const result = await listPendingJoinsHandler({} as Record<string, never>, deps);
+
+      expect(result.count).toBe(0);
+      expect(result.pending_requests).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("list_pending_joins returns empty when no requests", async () => {
+    const result = await listPendingJoinsHandler({} as Record<string, never>, deps);
+
+    expect(result.count).toBe(0);
+    expect(result.pending_requests).toEqual([]);
+  });
+
+  // --- Full flow tests ---
+
+  it("full flow: join_group → approve_join → joined", async () => {
+    // Step 1: Create pending join request
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    const joinResult = await joinGroupHandler({ group_id: "group-1" }, deps);
+    expect(joinResult.status).toBe("pending_operator_approval");
+
+    // Step 2: Approve the join
+    const mockJoinResult = {
+      data: {
+        group_id: "group-1",
+        account_id: "account-1",
+        role: "member" as const,
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    };
+    (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockResolvedValue(mockJoinResult);
+
+    const approveResult = await approveJoinHandler({ group_id: "group-1" }, deps);
+    expect(approveResult.status).toBe("joined");
+    expect((approveResult as { group_id: string }).group_id).toBe("group-1");
+
+    // Pending should be cleared
+    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
+  });
+
+  it("full flow: join_group → reject_join → cleared", async () => {
+    // Step 1: Create pending join request
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    const joinResult = await joinGroupHandler({ group_id: "group-1" }, deps);
+    expect(joinResult.status).toBe("pending_operator_approval");
+
+    // Step 2: Reject the join
+    const rejectResult = await rejectJoinHandler({ group_id: "group-1" }, deps);
+    expect(rejectResult.status).toBe("rejected");
+
+    // Pending should be cleared
+    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
+  });
+
+  it("full flow: join_group → expire → re-join_group works", async () => {
+    vi.useFakeTimers();
+    try {
+      (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+
+      // Step 1: Create pending
+      const first = await joinGroupHandler({ group_id: "group-1" }, deps);
+      expect(first.status).toBe("pending_operator_approval");
+      const firstId = (first as { pending_request_id: string }).pending_request_id;
+
+      // Step 2: Advance past expiry
+      vi.advanceTimersByTime(600001);
+
+      // Step 3: Re-join should create a new pending request
+      const second = await joinGroupHandler({ group_id: "group-1" }, deps);
+      expect(second.status).toBe("pending_operator_approval");
+      const secondId = (second as { pending_request_id: string }).pending_request_id;
+
+      // Should have a new ID (different from expired one)
+      expect(secondId).not.toBe(firstId);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // --- Existing tests (unchanged) ---
 
   it("leave_group calls api.leaveGroup + socket.channel().leave() + buffer.clearGroup()", async () => {
     (deps.api.leaveGroup as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);

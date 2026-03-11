@@ -13,6 +13,7 @@ import { loadConfig } from "./config.js";
 import { MeshimizeAPI } from "./api/client.js";
 import { PhoenixSocket } from "./ws/client.js";
 import { MessageBuffer } from "./buffer/message-buffer.js";
+import { createPendingJoinMap } from "./state/pending-joins.js";
 import { registerTools } from "./tools/index.js";
 import { startOrchestration } from "./startup.js";
 
@@ -30,13 +31,14 @@ async function main(): Promise<void> {
     maxReconnectAttempts: config.maxReconnectAttempts,
   });
   const buffer = new MessageBuffer(config.bufferSize);
+  const pendingJoins = createPendingJoinMap(config);
 
   // 3. Run startup orchestration (authenticate, connect WS, join channels)
   await startOrchestration({ api, socket, buffer });
 
   // 4. Create and start MCP server
   const server = new McpServer({ name: "meshimize-mcp", version: "0.1.0" });
-  registerTools(server, { api, socket, buffer });
+  registerTools(server, { api, socket, buffer, pendingJoins });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
