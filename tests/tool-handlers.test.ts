@@ -151,17 +151,33 @@ describe("tool handlers", () => {
     );
   });
 
-  it("join_group returns error when group not found", async () => {
+  it("join_group throws error when group not found", async () => {
     const emptyResult = {
       data: [],
       meta: { has_more: false, next_cursor: null, count: 0 },
     };
     (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(emptyResult);
 
-    const result = await joinGroupHandler({ group_id: "group-nonexistent" }, deps);
+    await expect(joinGroupHandler({ group_id: "group-nonexistent" }, deps)).rejects.toThrow(
+      "not found",
+    );
+  });
 
-    expect(result.status).toBe("error");
-    expect(result.message).toContain("not found");
+  it("join_group returns already_member when account has a role in the group", async () => {
+    const memberGroup = { ...mockGroup, my_role: "member" as const };
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [memberGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+
+    const result = await joinGroupHandler({ group_id: "group-1" }, deps);
+
+    expect(result.status).toBe("already_member");
+    expect((result as { role: string }).role).toBe("member");
+    // Should NOT create a pending request
+    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
+    // Should NOT call api.joinGroup
+    expect(deps.api.joinGroup).not.toHaveBeenCalled();
   });
 
   it("join_group returns error when max pending joins exceeded", async () => {
@@ -219,14 +235,13 @@ describe("tool handlers", () => {
     expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
   });
 
-  it("approve_join returns error when no pending request", async () => {
-    const result = await approveJoinHandler({ group_id: "group-1" }, deps);
-
-    expect(result.status).toBe("error");
-    expect(result.message).toContain("No pending join request");
+  it("approve_join throws error when no pending request", async () => {
+    await expect(approveJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow(
+      "No pending join request",
+    );
   });
 
-  it("approve_join returns error after request expires", async () => {
+  it("approve_join throws error after request expires", async () => {
     vi.useFakeTimers();
     try {
       (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
@@ -235,10 +250,9 @@ describe("tool handlers", () => {
       // Advance past expiry (>600000ms = 10 minutes)
       vi.advanceTimersByTime(600001);
 
-      const result = await approveJoinHandler({ group_id: "group-1" }, deps);
-
-      expect(result.status).toBe("error");
-      expect(result.message).toContain("No pending join request");
+      await expect(approveJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow(
+        "No pending join request",
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -291,11 +305,10 @@ describe("tool handlers", () => {
     expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
   });
 
-  it("reject_join returns error when no pending request", async () => {
-    const result = await rejectJoinHandler({ group_id: "group-1" }, deps);
-
-    expect(result.status).toBe("error");
-    expect(result.message).toContain("No pending join request");
+  it("reject_join throws error when no pending request", async () => {
+    await expect(rejectJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow(
+      "No pending join request",
+    );
   });
 
   // --- list_pending_joins ---

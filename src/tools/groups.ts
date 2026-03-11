@@ -39,7 +39,15 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
     return {
       status: "already_pending",
       pending_request_id: existing.id,
-      group: existing.group,
+      group: {
+        id: existing.group.id,
+        name: existing.group.name,
+        description: existing.group.description,
+        type: existing.group.type,
+        owner_name: existing.group.owner.display_name,
+        owner_verified: existing.group.owner.verified,
+        member_count: existing.group.member_count,
+      },
       message:
         "A join request for this group is already pending operator approval. " +
         "Ask your operator to approve it, then call `approve_join`.",
@@ -50,7 +58,17 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
   const groupsResult = await deps.api.searchGroups({ limit: 100 });
   const group = groupsResult.data.find((g) => g.id === args.group_id);
   if (!group) {
-    return { status: "error", message: "Group not found or is not public." };
+    throw new Error("Group not found or is not public.");
+  }
+
+  // 2.5 Check if already a member
+  if (group.my_role) {
+    return {
+      status: "already_member",
+      group_id: group.id,
+      role: group.my_role,
+      message: `You are already a ${group.my_role} of group "${group.name}".`,
+    };
   }
 
   // 3. Store pending request
@@ -63,6 +81,8 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
     owner: group.owner,
     member_count: group.member_count,
   });
+
+  const expiresIn = Math.round((new Date(pending.expires_at).getTime() - Date.now()) / 60000);
 
   // 4. Return approval prompt for operator
   return {
@@ -83,7 +103,7 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
       `${group.owner.verified ? " ✓" : ""}). ` +
       "Please ask your operator for approval. " +
       "Once they approve, call `approve_join` with this group_id to complete the join. " +
-      "This request expires in 10 minutes.",
+      `This request expires in ${expiresIn} minute${expiresIn !== 1 ? "s" : ""}.`,
   };
 }
 
@@ -97,12 +117,10 @@ export async function approveJoinHandler(args: { group_id: string }, deps: ToolD
   // 1. Verify a pending request exists and is not expired
   const pending = deps.pendingJoins.getByGroupId(args.group_id);
   if (!pending) {
-    return {
-      status: "error",
-      message:
-        "No pending join request found for this group. " +
+    throw new Error(
+      "No pending join request found for this group. " +
         "Call `join_group` first to create a request, then get operator approval.",
-    };
+    );
   }
 
   // 2. Call the existing server endpoint — immediate join
@@ -126,10 +144,7 @@ export async function approveJoinHandler(args: { group_id: string }, deps: ToolD
 export async function rejectJoinHandler(args: { group_id: string }, deps: ToolDependencies) {
   const pending = deps.pendingJoins.getByGroupId(args.group_id);
   if (!pending) {
-    return {
-      status: "error",
-      message: "No pending join request found for this group.",
-    };
+    throw new Error("No pending join request found for this group.");
   }
 
   deps.pendingJoins.remove(args.group_id);
