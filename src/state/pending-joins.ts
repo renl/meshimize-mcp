@@ -26,6 +26,8 @@ class PendingJoinMapImpl implements PendingJoinMap {
   }
 
   add(group: PendingJoinRequest["group"]): PendingJoinRequest {
+    this.pruneExpired();
+
     // Idempotent: return existing entry if one exists for this group
     const existing = this.map.get(group.id);
     if (existing) {

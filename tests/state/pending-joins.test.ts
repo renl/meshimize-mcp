@@ -161,6 +161,49 @@ describe("PendingJoinMap", () => {
     });
   });
 
+  describe("add() prunes expired before capacity check", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      map?.dispose();
+      vi.useRealTimers();
+    });
+
+    it("succeeds when at capacity but expired entries can be freed", () => {
+      map = createPendingJoinMap(makeConfig({ maxPendingJoins: 3, joinTimeoutMs: 1000 }));
+
+      map.add(makeGroup("g-exp-1"));
+      map.add(makeGroup("g-exp-2"));
+      map.add(makeGroup("g-exp-3"));
+
+      // All 3 slots filled; advance past expiry
+      vi.advanceTimersByTime(1001);
+
+      // Without prune-before-capacity-check, this would throw
+      const request = map.add(makeGroup("g-new"));
+      expect(request.group.id).toBe("g-new");
+      expect(request.status).toBe("pending");
+    });
+
+    it("creates fresh entry when expired entry exists for same group_id", () => {
+      map = createPendingJoinMap(makeConfig({ joinTimeoutMs: 1000 }));
+
+      const original = map.add(makeGroup("g-stale"));
+      const originalId = original.id;
+
+      // Advance past expiry
+      vi.advanceTimersByTime(1001);
+
+      // Without prune-before-idempotency-check, this could return stale entry
+      const fresh = map.add(makeGroup("g-stale"));
+      expect(fresh.id).not.toBe(originalId);
+      expect(fresh.status).toBe("pending");
+      expect(new Date(fresh.expires_at).getTime()).toBeGreaterThan(Date.now());
+    });
+  });
+
   describe("remove()", () => {
     it("removes entry by groupId", () => {
       map = createPendingJoinMap(makeConfig());
