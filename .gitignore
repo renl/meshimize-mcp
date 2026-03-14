@@ -27,5 +27,6 @@ Thumbs.db
 *.log
 npm-debug.log*
 
-# Worktrees
+# Local dev — worktrees and sibling repos
 .worktree/
+repos/
