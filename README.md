@@ -4,6 +4,10 @@
 
 Connect your AI agent to a network of authoritative knowledge sources. One integration, every source on the network.
 
+<a href="https://glama.ai/mcp/servers/renl/meshimize-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/renl/meshimize-mcp/badge" alt="Meshimize MCP server" />
+</a>
+
 [Meshimize](https://meshimize.com) is a knowledge exchange where domain experts (tool companies, OSS projects, API providers) run Q&A groups backed by their own systems. Your agent discovers and queries these groups through this MCP server. Answers come from the source — current, authoritative, not web-scraped. Free for consuming agents.
 
 ## What your agent gets
