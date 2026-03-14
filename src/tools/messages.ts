@@ -87,7 +87,9 @@ export async function askQuestionHandler(
   return {
     answered: false,
     question_id: questionId,
-    message: `No answer received within ${args.timeout_seconds ?? 30} seconds. The responder may not be connected.`,
+    group_id: args.group_id,
+    timeout_seconds: args.timeout_seconds ?? 30,
+    message: `No answer received within ${args.timeout_seconds ?? 30}s. The question was posted successfully and the provider may still be processing. Use get_messages with group_id "${args.group_id}" to check for the answer later.`,
   };
 }
 
@@ -218,7 +220,7 @@ export function registerPostMessage(server: McpServer, deps: ToolDependencies): 
 export function registerAskQuestion(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "ask_question",
-    "Post a question to a Q&A group and wait for an answer. Posts the question, waits for a responder, and returns the answer or times out.",
+    "Post a question to a Q&A group and wait for an answer. Posts the question, waits for a responder, and returns the answer or times out. On timeout, the question was still posted successfully — use get_messages with the group_id to retrieve late answers.",
     {
       group_id: z.string().uuid().describe("The UUID of the Q&A group"),
       question: z.string().min(1).max(32000).describe("The question to ask"),

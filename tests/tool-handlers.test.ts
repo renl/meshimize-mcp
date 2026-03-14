@@ -608,6 +608,77 @@ describe("tool handlers", () => {
     vi.useRealTimers();
   });
 
+  it("ask_question returns actionable timeout with group_id and timeout_seconds", async () => {
+    vi.useFakeTimers();
+
+    (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: "q-timeout",
+        group_id: "group-1",
+        content: "Slow question?",
+        message_type: "question",
+        parent_message_id: null,
+        sender: { id: "s-1", display_name: "Asker", verified: false },
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    });
+
+    // Buffer never returns an answer
+    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
+
+    const promise = askQuestionHandler(
+      { group_id: "group-1", question: "Slow question?", timeout_seconds: 5 },
+      deps,
+    );
+    await vi.advanceTimersByTimeAsync(6000);
+    const result = await promise;
+
+    expect(result.answered).toBe(false);
+    expect(result.question_id).toBe("q-timeout");
+    expect(result).toHaveProperty("group_id", "group-1");
+    expect(result).toHaveProperty("timeout_seconds", 5);
+    expect(result).toHaveProperty("message");
+    if ("message" in result) {
+      expect(result.message).toContain("get_messages");
+      expect(result.message).toContain("group-1");
+    }
+
+    vi.useRealTimers();
+  });
+
+  it("ask_question timeout uses default timeout_seconds when not specified", async () => {
+    vi.useFakeTimers();
+
+    (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: "q-default",
+        group_id: "group-2",
+        content: "Default timeout?",
+        message_type: "question",
+        parent_message_id: null,
+        sender: { id: "s-1", display_name: "Asker", verified: false },
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    });
+
+    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
+
+    const promise = askQuestionHandler({ group_id: "group-2", question: "Default timeout?" }, deps);
+    await vi.advanceTimersByTimeAsync(31000);
+    const result = await promise;
+
+    expect(result.answered).toBe(false);
+    expect(result).toHaveProperty("group_id", "group-2");
+    expect(result).toHaveProperty("timeout_seconds", 30);
+    expect(result).toHaveProperty("message");
+    if ("message" in result) {
+      expect(result.message).toContain("30s");
+      expect(result.message).toContain("get_messages");
+    }
+
+    vi.useRealTimers();
+  });
+
   it("get_pending_questions (single group) returns from buffer when available", async () => {
     const bufferedQuestions = [
       {
