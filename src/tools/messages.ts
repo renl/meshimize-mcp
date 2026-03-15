@@ -189,7 +189,7 @@ export function registerGetMessages(server: McpServer, deps: ToolDependencies): 
 export function registerPostMessage(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "post_message",
-    "Send a message to a group. Use 'question' type for Q&A groups, 'answer' to reply to a question (requires parent_message_id), or 'post' for discussion.",
+    "Send a message to a group. Use 'question' type for Q&A groups, 'answer' to reply to a question (requires parent_message_id), or 'post' for discussion. Check `list_my_groups` first to confirm membership before posting.",
     {
       group_id: z.string().uuid().describe("The UUID of the group to post to"),
       content: z.string().min(1).max(32000).describe("The message content"),
@@ -220,7 +220,7 @@ export function registerPostMessage(server: McpServer, deps: ToolDependencies): 
 export function registerAskQuestion(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "ask_question",
-    "Post a question to a Q&A group and wait for an answer. Posts the question, waits for a responder, and returns the answer or times out. On timeout, the question was still posted successfully — use get_messages with the group_id to retrieve late answers.",
+    "Post a question to a Q&A group and wait for an answer. Posts the question, waits for a responder, and returns the answer or times out. On timeout, the question was still posted successfully — use get_messages with the group_id to retrieve late answers. If you already know the group or are unsure of membership, call `list_my_groups` first. If you're already a member, skip search/join and call this tool directly with the group_id.",
     {
       group_id: z.string().uuid().describe("The UUID of the Q&A group"),
       question: z.string().min(1).max(32000).describe("The question to ask"),

@@ -9,13 +9,21 @@ export async function searchGroupsHandler(
   args: { query?: string; type?: "open_discussion" | "qa" | "announcement"; limit?: number },
   deps: ToolDependencies,
 ) {
-  const result = await deps.api.searchGroups({
-    q: args.query,
-    type: args.type,
-    limit: args.limit,
-  });
+  const [searchResult, myGroupsResult] = await Promise.all([
+    deps.api.searchGroups({
+      q: args.query,
+      type: args.type,
+      limit: args.limit,
+    }),
+    deps.api.getMyGroups({ limit: 100 }).catch(() => null),
+  ]);
+
+  const myGroups = myGroupsResult?.data ?? [];
+  const memberIdSet = new Set<string>(myGroups.map((g) => g.id));
+  const roleMap = new Map<string, string | null>(myGroups.map((g) => [g.id, g.my_role]));
+
   return {
-    groups: result.data.map((g) => ({
+    groups: searchResult.data.map((g) => ({
       id: g.id,
       name: g.name,
       description: g.description,
@@ -23,8 +31,10 @@ export async function searchGroupsHandler(
       owner: g.owner.display_name,
       owner_verified: g.owner.verified,
       member_count: g.member_count,
+      is_member: memberIdSet.has(g.id),
+      my_role: roleMap.get(g.id) ?? null,
     })),
-    has_more: result.meta.has_more,
+    has_more: searchResult.meta.has_more,
   };
 }
 
@@ -377,7 +387,7 @@ export function registerLeaveGroup(server: McpServer, deps: ToolDependencies): v
 export function registerListMyGroups(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "list_my_groups",
-    "List all groups you are currently a member of, including your role in each group.",
+    "List all groups you are currently a member of, including your role in each group. Call this first before searching or joining — if the group you need is already in your memberships, you can interact with it directly (ask_question, post_message, get_messages) without searching or joining.",
     {},
     async (args) => {
       try {

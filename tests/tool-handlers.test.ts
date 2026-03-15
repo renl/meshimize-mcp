@@ -93,8 +93,12 @@ describe("tool handlers", () => {
     deps.pendingJoins.dispose();
   });
 
-  it("search_groups calls api.searchGroups and returns formatted results", async () => {
+  it("search_groups calls api.searchGroups and returns formatted results with membership enrichment", async () => {
     (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [{ ...mockGroup, my_role: "member" }],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
 
     const result = await searchGroupsHandler({ query: "test", limit: 50 }, deps);
 
@@ -104,12 +108,61 @@ describe("tool handlers", () => {
     expect(result.groups[0].owner).toBe("Owner");
     expect(result.groups[0].owner_verified).toBe(true);
     expect(result.groups[0].member_count).toBe(42);
+    expect(result.groups[0].is_member).toBe(true);
+    expect(result.groups[0].my_role).toBe("member");
     expect(result.has_more).toBe(false);
     expect(deps.api.searchGroups).toHaveBeenCalledWith({
       q: "test",
       type: undefined,
       limit: 50,
     });
+    expect(deps.api.getMyGroups).toHaveBeenCalledWith({ limit: 100 });
+  });
+
+  it("search_groups marks non-member groups correctly", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+
+    const result = await searchGroupsHandler({ query: "test", limit: 50 }, deps);
+
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].is_member).toBe(false);
+    expect(result.groups[0].my_role).toBeNull();
+  });
+
+  it("search_groups degrades gracefully when getMyGroups fails", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("Network error"),
+    );
+
+    const result = await searchGroupsHandler({ query: "test", limit: 50 }, deps);
+
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].id).toBe("group-1");
+    expect(result.groups[0].name).toBe("Test Group");
+    // Without membership data, all groups show as non-member
+    expect(result.groups[0].is_member).toBe(false);
+    expect(result.groups[0].my_role).toBeNull();
+    expect(result.has_more).toBe(false);
+  });
+
+  it("search_groups marks member correctly even when my_role is null", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [{ ...mockGroup, my_role: null }],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+
+    const result = await searchGroupsHandler({ query: "test", limit: 50 }, deps);
+
+    expect(result.groups).toHaveLength(1);
+    // Group returned by getMyGroups means user IS a member, regardless of my_role value
+    expect(result.groups[0].is_member).toBe(true);
+    expect(result.groups[0].my_role).toBeNull();
   });
 
   // --- join_group (rewritten: creates pending request, no server join) ---
