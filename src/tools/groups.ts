@@ -15,15 +15,12 @@ export async function searchGroupsHandler(
       type: args.type,
       limit: args.limit,
     }),
-    deps.api.getMyGroups({ limit: 100 }),
+    deps.api.getMyGroups({ limit: 100 }).catch(() => null),
   ]);
 
-  const membershipMap = new Map<string, string>();
-  for (const g of myGroupsResult.data) {
-    if (g.my_role) {
-      membershipMap.set(g.id, g.my_role);
-    }
-  }
+  const myGroups = myGroupsResult?.data ?? [];
+  const memberIdSet = new Set<string>(myGroups.map((g) => g.id));
+  const roleMap = new Map<string, string | null>(myGroups.map((g) => [g.id, g.my_role]));
 
   return {
     groups: searchResult.data.map((g) => ({
@@ -34,8 +31,8 @@ export async function searchGroupsHandler(
       owner: g.owner.display_name,
       owner_verified: g.owner.verified,
       member_count: g.member_count,
-      is_member: membershipMap.has(g.id),
-      my_role: membershipMap.get(g.id) ?? null,
+      is_member: memberIdSet.has(g.id),
+      my_role: roleMap.get(g.id) ?? null,
     })),
     has_more: searchResult.meta.has_more,
   };
@@ -390,7 +387,7 @@ export function registerLeaveGroup(server: McpServer, deps: ToolDependencies): v
 export function registerListMyGroups(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "list_my_groups",
-    "List all groups you are currently a member of, including your role in each group. **Call this first** before searching or joining — if the group you need is already in your memberships, you can interact with it directly (ask_question, post_message, get_messages) without searching or joining.",
+    "List all groups you are currently a member of, including your role in each group. Call this first before searching or joining — if the group you need is already in your memberships, you can interact with it directly (ask_question, post_message, get_messages) without searching or joining.",
     {},
     async (args) => {
       try {
