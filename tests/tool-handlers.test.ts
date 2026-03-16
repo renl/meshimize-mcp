@@ -717,15 +717,15 @@ describe("tool handlers", () => {
     (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
     const promise = askQuestionHandler({ group_id: "group-2", question: "Default timeout?" }, deps);
-    await vi.advanceTimersByTimeAsync(31000);
+    await vi.advanceTimersByTimeAsync(91000);
     const result = await promise;
 
     expect(result.answered).toBe(false);
     expect(result).toHaveProperty("group_id", "group-2");
-    expect(result).toHaveProperty("timeout_seconds", 30);
+    expect(result).toHaveProperty("timeout_seconds", 90);
     expect(result).toHaveProperty("message");
     if ("message" in result) {
-      expect(result.message).toContain("30s");
+      expect(result.message).toContain("90s");
       expect(result.message).toContain("get_messages");
     }
 
