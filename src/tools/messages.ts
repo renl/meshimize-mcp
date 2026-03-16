@@ -60,7 +60,7 @@ export async function askQuestionHandler(
   });
   const questionId = questionResult.data.id;
 
-  const timeoutMs = (args.timeout_seconds ?? 30) * 1000;
+  const timeoutMs = (args.timeout_seconds ?? 90) * 1000;
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeoutMs) {
@@ -88,8 +88,8 @@ export async function askQuestionHandler(
     answered: false,
     question_id: questionId,
     group_id: args.group_id,
-    timeout_seconds: args.timeout_seconds ?? 30,
-    message: `No answer received within ${args.timeout_seconds ?? 30}s. The question was posted successfully and the provider may still be processing. Use get_messages with group_id "${args.group_id}" to check for the answer later.`,
+    timeout_seconds: args.timeout_seconds ?? 90,
+    message: `No answer received within ${args.timeout_seconds ?? 90}s. The question was posted successfully and the provider may still be processing. Use get_messages with group_id "${args.group_id}" to check for the answer later.`,
   };
 }
 
@@ -228,9 +228,9 @@ export function registerAskQuestion(server: McpServer, deps: ToolDependencies): 
         .number()
         .int()
         .min(5)
-        .max(120)
+        .max(300)
         .optional()
-        .default(30)
+        .default(90)
         .describe("How long to wait for an answer (seconds)"),
     },
     async (args) => {
