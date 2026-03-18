@@ -5,6 +5,24 @@ import { findMyGroupById } from "./my-groups.js";
 import { normalizeAuthorityLookupKey } from "../state/authority-lookups.js";
 import type { ApproveJoinResult } from "../types/workflow.js";
 
+function buildPendingJoinGroup(group: {
+  id: string;
+  name: string;
+  description: string | null;
+  type: "open_discussion" | "qa" | "announcement";
+  owner_name: string;
+  owner_verified: boolean;
+}) {
+  return {
+    id: group.id,
+    name: group.name,
+    description: group.description,
+    type: group.type,
+    owner_name: group.owner_name,
+    owner_verified: group.owner_verified,
+  };
+}
+
 /**
  * Searches public groups with optional keyword and type filters.
  */
@@ -91,21 +109,21 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
     return {
       status: "already_pending",
       pending_request_id: existing.id,
-      group: {
+      group: buildPendingJoinGroup({
         id: existing.group_id,
         name: existing.group_name,
         description: existing.group_description,
         type: existing.group_type,
         owner_name: existing.owner_display_name,
         owner_verified: existing.owner_verified,
-      },
+      }),
       message:
         "A join request for this group is already pending operator approval. " +
         "Ask your operator to approve it, then call `approve_join`.",
     };
   }
 
-  const membership = await findMyGroupById(deps.api, args.group_id).catch(() => null);
+  const membership = await findMyGroupById(deps.api, args.group_id);
   if (membership) {
     const resolvedRole = membership.my_role ?? "member";
     return {
@@ -141,15 +159,14 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
   return {
     status: "pending_operator_approval",
     pending_request_id: pending.id,
-    group: {
+    group: buildPendingJoinGroup({
       id: group.id,
       name: group.name,
       description: group.description,
       type: group.type,
       owner_name: group.owner.display_name,
       owner_verified: group.owner.verified,
-      member_count: group.member_count,
-    },
+    }),
     message:
       `Join request created for group "${group.name}" (${group.type}, ` +
       `${group.member_count} members, owned by ${group.owner.display_name}` +

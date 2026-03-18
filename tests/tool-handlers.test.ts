@@ -300,6 +300,44 @@ describe("tool handlers", () => {
     expect(deps.api.searchGroups).not.toHaveBeenCalled();
   });
 
+  it("join_group surfaces membership lookup failures and does not create pending state", async () => {
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("membership lookup failed"),
+    );
+
+    await expect(joinGroupHandler({ group_id: mockGroup.id }, deps)).rejects.toThrow(
+      "membership lookup failed",
+    );
+    expect(deps.api.searchGroups).not.toHaveBeenCalled();
+    expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeUndefined();
+  });
+
+  it("join_group returns consistent group shape for pending_operator_approval and already_pending", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+
+    const first = await joinGroupHandler({ group_id: mockGroup.id }, deps);
+    const second = await joinGroupHandler({ group_id: mockGroup.id }, deps);
+
+    expect(first.status).toBe("pending_operator_approval");
+    expect(second.status).toBe("already_pending");
+    expect(first.group).toEqual(second.group);
+    expect(first.group).toEqual({
+      id: mockGroup.id,
+      name: mockGroup.name,
+      description: mockGroup.description,
+      type: mockGroup.type,
+      owner_name: mockGroup.owner.display_name,
+      owner_verified: mockGroup.owner.verified,
+    });
+  });
+
   it("approve_join returns canonical result and marks the next ask as post_approval_first_ask", async () => {
     (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: [mockGroup],
