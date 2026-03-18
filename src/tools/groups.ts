@@ -1,6 +1,27 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
+import { findMyGroupById } from "./my-groups.js";
+import { normalizeAuthorityLookupKey } from "../state/authority-lookups.js";
+import type { ApproveJoinResult } from "../types/workflow.js";
+
+function buildPendingJoinGroup(group: {
+  id: string;
+  name: string;
+  description: string | null;
+  type: "open_discussion" | "qa" | "announcement";
+  owner_name: string;
+  owner_verified: boolean;
+}) {
+  return {
+    id: group.id,
+    name: group.name,
+    description: group.description,
+    type: group.type,
+    owner_name: group.owner_name,
+    owner_verified: group.owner_verified,
+  };
+}
 
 /**
  * Searches public groups with optional keyword and type filters.
@@ -9,14 +30,54 @@ export async function searchGroupsHandler(
   args: { query?: string; type?: "open_discussion" | "qa" | "announcement"; limit?: number },
   deps: ToolDependencies,
 ) {
+  const lookupKey = normalizeAuthorityLookupKey({ query: args.query, type: args.type });
+  const normalizedQuery = lookupKey.query_text === "" ? undefined : lookupKey.query_text;
+
+  deps.workflowRecorder.record("authority_lookup_started", {
+    query_text: lookupKey.query_text,
+    type_filter: lookupKey.type_filter,
+  });
+
+  const priorLookup = deps.authorityLookups.get(lookupKey);
+  if (priorLookup?.decision === "no_relevant_group_found") {
+    deps.workflowRecorder.record("authority_lookup_repeat_suppressed", {
+      query_text: lookupKey.query_text,
+      type_filter: lookupKey.type_filter,
+      recorded_at: priorLookup.recorded_at,
+      expires_at: priorLookup.expires_at,
+    });
+
+    return {
+      groups: [],
+      has_more: false,
+      suppressed_repeat_lookup: true,
+      message:
+        "Meshimize already found no relevant public group for this exact lookup in the current session. " +
+        "Do not keep repeating the same no-result search unless the authority need has changed.",
+    };
+  }
+
   const [searchResult, myGroupsResult] = await Promise.all([
     deps.api.searchGroups({
-      q: args.query,
+      q: normalizedQuery,
       type: args.type,
       limit: args.limit,
     }),
     deps.api.getMyGroups({ limit: 100 }).catch(() => null),
   ]);
+
+  deps.authorityLookups.record(
+    lookupKey,
+    searchResult.data.length === 0 ? "no_relevant_group_found" : "candidate_groups_returned",
+    searchResult.data.map((group) => group.id),
+  );
+
+  if (searchResult.data.length === 0) {
+    deps.workflowRecorder.record("authority_lookup_zero_results", {
+      query_text: lookupKey.query_text,
+      type_filter: lookupKey.type_filter,
+    });
+  }
 
   const myGroups = myGroupsResult?.data ?? [];
   const memberIdSet = new Set<string>(myGroups.map((g) => g.id));
@@ -43,70 +104,69 @@ export async function searchGroupsHandler(
  * Does NOT call the server join endpoint — that happens in approveJoinHandler.
  */
 export async function joinGroupHandler(args: { group_id: string }, deps: ToolDependencies) {
-  // 1. Check if already pending for this group
   const existing = deps.pendingJoins.getByGroupId(args.group_id);
   if (existing) {
     return {
       status: "already_pending",
       pending_request_id: existing.id,
-      group: {
-        id: existing.group.id,
-        name: existing.group.name,
-        description: existing.group.description,
-        type: existing.group.type,
-        owner_name: existing.group.owner.display_name,
-        owner_verified: existing.group.owner.verified,
-        member_count: existing.group.member_count,
-      },
+      group: buildPendingJoinGroup({
+        id: existing.group_id,
+        name: existing.group_name,
+        description: existing.group_description,
+        type: existing.group_type,
+        owner_name: existing.owner_display_name,
+        owner_verified: existing.owner_verified,
+      }),
       message:
         "A join request for this group is already pending operator approval. " +
         "Ask your operator to approve it, then call `approve_join`.",
     };
   }
 
-  // 2. Fetch group details for the operator to review
+  const membership = await findMyGroupById(deps.api, args.group_id);
+  if (membership) {
+    const resolvedRole = membership.my_role ?? "member";
+    return {
+      status: "already_member",
+      group_id: membership.id,
+      role: resolvedRole,
+      message: `You are already a ${resolvedRole} of group "${membership.name}".`,
+    };
+  }
+
   const groupsResult = await deps.api.searchGroups({ limit: 100 });
   const group = groupsResult.data.find((g) => g.id === args.group_id);
   if (!group) {
     throw new Error("Group not found or is not public.");
   }
 
-  // 2.5 Check if already a member
-  if (group.my_role) {
-    return {
-      status: "already_member",
-      group_id: group.id,
-      role: group.my_role,
-      message: `You are already a ${group.my_role} of group "${group.name}".`,
-    };
-  }
-
-  // 3. Store pending request
   const pending = deps.pendingJoins.add({
     id: group.id,
     name: group.name,
     description: group.description,
     type: group.type,
-    visibility: group.visibility,
     owner: group.owner,
-    member_count: group.member_count,
+  });
+
+  deps.workflowRecorder.record("authority_join_pending", {
+    group_id: group.id,
+    group_name: group.name,
+    group_type: group.type,
   });
 
   const expiresIn = Math.round((new Date(pending.expires_at).getTime() - Date.now()) / 60000);
 
-  // 4. Return approval prompt for operator
   return {
     status: "pending_operator_approval",
     pending_request_id: pending.id,
-    group: {
+    group: buildPendingJoinGroup({
       id: group.id,
       name: group.name,
       description: group.description,
       type: group.type,
       owner_name: group.owner.display_name,
       owner_verified: group.owner.verified,
-      member_count: group.member_count,
-    },
+    }),
     message:
       `Join request created for group "${group.name}" (${group.type}, ` +
       `${group.member_count} members, owned by ${group.owner.display_name}` +
@@ -124,28 +184,30 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
  * via the account channel's group_joined event handler.
  */
 export async function approveJoinHandler(args: { group_id: string }, deps: ToolDependencies) {
-  // 1. Verify a pending request exists and is not expired
-  const pending = deps.pendingJoins.getByGroupId(args.group_id);
-  if (!pending) {
+  if (!deps.pendingJoins.getByGroupId(args.group_id)) {
     throw new Error(
       "No pending join request found for this group. " +
         "Call `join_group` first to create a request, then get operator approval.",
     );
   }
 
-  // 2. Call the existing server endpoint — immediate join
   const result = await deps.api.joinGroup(args.group_id);
 
-  // 3. Clean up pending state (WS channel join happens automatically via account channel event)
   deps.pendingJoins.remove(args.group_id);
-
-  // 4. Return success
-  return {
-    status: "joined",
-    group_id: result.data.group_id,
+  deps.membershipPaths.markPostApprovalFirstAsk(args.group_id);
+  deps.workflowRecorder.record("authority_join_approved", {
+    group_id: args.group_id,
     role: result.data.role,
-    message: `Successfully joined group "${pending.group.name}" as ${result.data.role}.`,
+  });
+
+  const approveResult: ApproveJoinResult = {
+    group_id: result.data.group_id,
+    joined: true,
+    membership_path_ready: "post_approval_first_ask",
+    role: result.data.role,
   };
+
+  return approveResult;
 }
 
 /**
@@ -158,11 +220,12 @@ export async function rejectJoinHandler(args: { group_id: string }, deps: ToolDe
   }
 
   deps.pendingJoins.remove(args.group_id);
+  deps.membershipPaths.clear(args.group_id);
 
   return {
     status: "rejected",
     group_id: args.group_id,
-    message: `Join request for group "${pending.group.name}" has been cancelled.`,
+    message: `Join request for group "${pending.group_name}" has been cancelled.`,
   };
 }
 
@@ -177,11 +240,11 @@ export async function listPendingJoinsHandler(
   return {
     pending_requests: pending.map((p) => ({
       id: p.id,
-      group_id: p.group.id,
-      group_name: p.group.name,
-      group_type: p.group.type,
-      owner_name: p.group.owner.display_name,
-      owner_verified: p.group.owner.verified,
+      group_id: p.group_id,
+      group_name: p.group_name,
+      group_type: p.group_type,
+      owner_name: p.owner_display_name,
+      owner_verified: p.owner_verified,
       created_at: p.created_at,
       expires_at: p.expires_at,
     })),
@@ -201,6 +264,7 @@ export async function leaveGroupHandler(args: { group_id: string }, deps: ToolDe
     // Ignore WebSocket leave errors — REST leave already succeeded
   } finally {
     deps.buffer.clearGroup(args.group_id);
+    deps.membershipPaths.clear(args.group_id);
   }
   return { success: true };
 }
@@ -225,7 +289,7 @@ export async function listMyGroupsHandler(_args: Record<string, never>, deps: To
 export function registerSearchGroups(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "search_groups",
-    "Search and browse public groups on the Meshimize network. Call with no query to browse ALL available groups — recommended when unsure which search term to use. Check `list_my_groups` first to see what you've already joined before searching. Returns groups matching the query, filterable by type.",
+    "Search and browse public groups on the Meshimize network. Use this when you need an external/source-of-truth answer and do not already know that you are a member of the right group. Check `list_my_groups` first to see what you've already joined before searching. Call with no query to browse ALL available groups — recommended when unsure which search term to use. If you already searched Meshimize for this exact need in the current session and found no relevant public group, do not keep searching again. Returns groups matching the query, filterable by type.",
     {
       query: z
         .string()
@@ -290,7 +354,7 @@ export function registerJoinGroup(server: McpServer, deps: ToolDependencies): vo
 export function registerApproveJoin(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "approve_join",
-    "Complete a pending group join after your operator has approved it. You must call `join_group` first to create the pending request. Only call this after your operator has explicitly approved the join.",
+    "Complete a pending group join after your operator has approved it. You must call `join_group` first to create the pending request. Only call this after your operator has explicitly approved the join. On success, ask the same group immediately with `ask_question` — the next ask is treated as the post-approval first ask and should not re-run discovery.",
     {
       group_id: z
         .string()

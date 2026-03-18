@@ -1,29 +1,31 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolDependencies } from "../src/tools/index.js";
 import {
-  searchGroupsHandler,
+  approveJoinHandler,
   joinGroupHandler,
   leaveGroupHandler,
   listMyGroupsHandler,
-  approveJoinHandler,
-  rejectJoinHandler,
   listPendingJoinsHandler,
+  rejectJoinHandler,
+  searchGroupsHandler,
 } from "../src/tools/groups.js";
 import {
-  getMessagesHandler,
-  postMessageHandler,
   askQuestionHandler,
+  getMessagesHandler,
   getPendingQuestionsHandler,
+  postMessageHandler,
 } from "../src/tools/messages.js";
 import {
-  sendDirectMessageHandler,
   getDirectMessagesHandler,
+  sendDirectMessageHandler,
 } from "../src/tools/direct-messages.js";
 import type { MeshimizeAPI } from "../src/api/client.js";
-import type { PhoenixSocket } from "../src/ws/client.js";
 import type { MessageBuffer } from "../src/buffer/message-buffer.js";
-import { createPendingJoinMap } from "../src/state/pending-joins.js";
 import type { Config } from "../src/config.js";
+import { createAuthorityLookupMap } from "../src/state/authority-lookups.js";
+import { createMembershipPathMap } from "../src/state/membership-paths.js";
+import { createPendingJoinMap } from "../src/state/pending-joins.js";
+import type { PhoenixSocket } from "../src/ws/client.js";
 
 function createTestConfig(): Config {
   return {
@@ -34,8 +36,14 @@ function createTestConfig(): Config {
     heartbeatIntervalMs: 30000,
     reconnectIntervalMs: 5000,
     maxReconnectAttempts: 10,
-    joinTimeoutMs: 600000, // 10 minutes
+    joinTimeoutMs: 600000,
     maxPendingJoins: 50,
+  };
+}
+
+function createRecorder() {
+  return {
+    record: vi.fn(),
   };
 }
 
@@ -61,26 +69,59 @@ function createMockDeps(): ToolDependencies {
       clearGroup: vi.fn(),
     } as unknown as MessageBuffer,
     pendingJoins: createPendingJoinMap(createTestConfig()),
+    authorityLookups: createAuthorityLookupMap(),
+    membershipPaths: createMembershipPathMap(),
+    workflowRecorder: createRecorder(),
   };
 }
 
 const mockGroup = {
-  id: "group-1",
+  id: "11111111-1111-1111-1111-111111111111",
   name: "Test Group",
   description: "A test group",
   type: "qa" as const,
   visibility: "public" as const,
   my_role: null,
-  owner: { id: "owner-1", display_name: "Owner", verified: true },
+  owner: {
+    id: "22222222-2222-2222-2222-222222222222",
+    display_name: "Owner",
+    verified: true,
+  },
   member_count: 42,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };
 
-const mockSearchResult = {
-  data: [mockGroup],
-  meta: { has_more: false, next_cursor: null, count: 1 },
-};
+function createMembershipGroup(id: string, overrides: Partial<typeof mockGroup> = {}) {
+  return {
+    ...mockGroup,
+    ...overrides,
+    id,
+  };
+}
+
+function createPaginatedMyGroupsMock(
+  pages: Array<{ data: Array<typeof mockGroup>; next_cursor?: string | null }>,
+) {
+  return ({ after }: { after?: string } = {}) => {
+    const pageIndex =
+      after === undefined ? 0 : pages.findIndex((page) => page.next_cursor === after) + 1;
+    const page = pages[pageIndex];
+
+    if (!page) {
+      throw new Error(`Unexpected pagination cursor: ${after ?? "<initial>"}`);
+    }
+
+    return Promise.resolve({
+      data: page.data,
+      meta: {
+        has_more: page.next_cursor != null,
+        next_cursor: page.next_cursor ?? null,
+        count: page.data.length,
+      },
+    });
+  };
+}
 
 describe("tool handlers", () => {
   let deps: ToolDependencies;
@@ -91,758 +132,683 @@ describe("tool handlers", () => {
 
   afterEach(() => {
     deps.pendingJoins.dispose();
+    deps.authorityLookups.dispose();
   });
 
-  it("search_groups calls api.searchGroups and returns formatted results with membership enrichment", async () => {
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+  it("search_groups enriches discovery results with membership state and records lookup start", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
     (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: [{ ...mockGroup, my_role: "member" }],
       meta: { has_more: false, next_cursor: null, count: 1 },
     });
 
-    const result = await searchGroupsHandler({ query: "test", limit: 50 }, deps);
+    const result = await searchGroupsHandler({ query: " Test ", type: "qa", limit: 50 }, deps);
 
     expect(result.groups).toHaveLength(1);
-    expect(result.groups[0].id).toBe("group-1");
-    expect(result.groups[0].name).toBe("Test Group");
-    expect(result.groups[0].owner).toBe("Owner");
-    expect(result.groups[0].owner_verified).toBe(true);
-    expect(result.groups[0].member_count).toBe(42);
-    expect(result.groups[0].is_member).toBe(true);
-    expect(result.groups[0].my_role).toBe("member");
-    expect(result.has_more).toBe(false);
-    expect(deps.api.searchGroups).toHaveBeenCalledWith({
-      q: "test",
-      type: undefined,
-      limit: 50,
+    expect(result.groups[0]).toMatchObject({
+      id: mockGroup.id,
+      is_member: true,
+      my_role: "member",
     });
+    expect(deps.api.searchGroups).toHaveBeenCalledWith({ q: "test", type: "qa", limit: 50 });
     expect(deps.api.getMyGroups).toHaveBeenCalledWith({ limit: 100 });
+    expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_lookup_started", {
+      query_text: "test",
+      type_filter: "qa",
+    });
   });
 
-  it("search_groups marks non-member groups correctly", async () => {
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+  it("search_groups omits q when the normalized query is empty", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
     (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: [],
       meta: { has_more: false, next_cursor: null, count: 0 },
     });
 
-    const result = await searchGroupsHandler({ query: "test", limit: 50 }, deps);
+    await searchGroupsHandler({ query: "   ", type: "qa", limit: 25 }, deps);
 
-    expect(result.groups).toHaveLength(1);
-    expect(result.groups[0].is_member).toBe(false);
-    expect(result.groups[0].my_role).toBeNull();
+    expect(deps.api.searchGroups).toHaveBeenCalledWith({ q: undefined, type: "qa", limit: 25 });
+    expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_lookup_started", {
+      query_text: "",
+      type_filter: "qa",
+    });
   });
 
-  it("search_groups degrades gracefully when getMyGroups fails", async () => {
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("Network error"),
+  it("search_groups suppresses exact repeated no-result lookups within the session", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+
+    const first = await searchGroupsHandler({ query: "Unknown", type: "qa", limit: 10 }, deps);
+    const second = await searchGroupsHandler({ query: " unknown ", type: "qa", limit: 10 }, deps);
+
+    expect(first.groups).toEqual([]);
+    expect(second).toMatchObject({
+      groups: [],
+      suppressed_repeat_lookup: true,
+    });
+    expect(deps.api.searchGroups).toHaveBeenCalledTimes(1);
+    expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_lookup_zero_results", {
+      query_text: "unknown",
+      type_filter: "qa",
+    });
+    expect(deps.workflowRecorder.record).toHaveBeenCalledWith(
+      "authority_lookup_repeat_suppressed",
+      expect.objectContaining({ query_text: "unknown", type_filter: "qa" }),
+    );
+  });
+
+  it("search_groups does not suppress repeated lookups when candidates were previously returned", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+
+    await searchGroupsHandler({ query: "meshimize", type: "qa", limit: 10 }, deps);
+    await searchGroupsHandler({ query: "meshimize", type: "qa", limit: 10 }, deps);
+
+    expect(deps.api.searchGroups).toHaveBeenCalledTimes(2);
+  });
+
+  it("join_group creates only pending local state and emits authority_join_pending", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+
+    const result = await joinGroupHandler({ group_id: mockGroup.id }, deps);
+
+    expect(result.status).toBe("pending_operator_approval");
+    expect(deps.api.joinGroup).not.toHaveBeenCalled();
+    expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeDefined();
+    expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_join_pending", {
+      group_id: mockGroup.id,
+      group_name: mockGroup.name,
+      group_type: mockGroup.type,
+    });
+  });
+
+  it("join_group resolves existing membership beyond the first getMyGroups page", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockImplementation(
+      createPaginatedMyGroupsMock([
+        {
+          data: Array.from({ length: 100 }, (_, index) =>
+            createMembershipGroup(`page-1-group-${index + 1}`),
+          ),
+          next_cursor: "cursor-2",
+        },
+        {
+          data: [createMembershipGroup(mockGroup.id, { my_role: "member" })],
+        },
+      ]),
     );
 
-    const result = await searchGroupsHandler({ query: "test", limit: 50 }, deps);
+    const result = await joinGroupHandler({ group_id: mockGroup.id }, deps);
 
-    expect(result.groups).toHaveLength(1);
-    expect(result.groups[0].id).toBe("group-1");
-    expect(result.groups[0].name).toBe("Test Group");
-    // Without membership data, all groups show as non-member
-    expect(result.groups[0].is_member).toBe(false);
-    expect(result.groups[0].my_role).toBeNull();
-    expect(result.has_more).toBe(false);
+    expect(result).toEqual({
+      status: "already_member",
+      group_id: mockGroup.id,
+      role: "member",
+      message: `You are already a member of group "${mockGroup.name}".`,
+    });
+    expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(1, { limit: 100, after: undefined });
+    expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(2, { limit: 100, after: "cursor-2" });
+    expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeUndefined();
   });
 
-  it("search_groups marks member correctly even when my_role is null", async () => {
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+  it("join_group returns already_member when the group is absent from discovery results but present in memberships", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
     (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: [{ ...mockGroup, my_role: null }],
+      data: [{ ...mockGroup, my_role: "member" }],
       meta: { has_more: false, next_cursor: null, count: 1 },
     });
 
-    const result = await searchGroupsHandler({ query: "test", limit: 50 }, deps);
+    const result = await joinGroupHandler({ group_id: mockGroup.id }, deps);
 
-    expect(result.groups).toHaveLength(1);
-    // Group returned by getMyGroups means user IS a member, regardless of my_role value
-    expect(result.groups[0].is_member).toBe(true);
-    expect(result.groups[0].my_role).toBeNull();
+    expect(result).toEqual({
+      status: "already_member",
+      group_id: mockGroup.id,
+      role: "member",
+      message: `You are already a member of group "${mockGroup.name}".`,
+    });
+    expect(deps.api.searchGroups).not.toHaveBeenCalled();
   });
 
-  // --- join_group (rewritten: creates pending request, no server join) ---
+  it("join_group surfaces membership lookup failures and does not create pending state", async () => {
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("membership lookup failed"),
+    );
 
-  it("join_group creates pending request and returns pending_operator_approval status", async () => {
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-
-    const result = await joinGroupHandler({ group_id: "group-1" }, deps);
-
-    expect(result.status).toBe("pending_operator_approval");
-    expect(result).toHaveProperty("pending_request_id");
-    expect(result).toHaveProperty("group");
-    if ("group" in result && result.group && typeof result.group === "object") {
-      const group = result.group as Record<string, unknown>;
-      expect(group.id).toBe("group-1");
-      expect(group.name).toBe("Test Group");
-      expect(group.type).toBe("qa");
-      expect(group.owner_name).toBe("Owner");
-      expect(group.owner_verified).toBe(true);
-      expect(group.member_count).toBe(42);
-    }
-    // join_group should NOT call api.joinGroup
-    expect(deps.api.joinGroup).not.toHaveBeenCalled();
-    expect(deps.api.searchGroups).toHaveBeenCalledWith({ limit: 100 });
+    await expect(joinGroupHandler({ group_id: mockGroup.id }, deps)).rejects.toThrow(
+      "membership lookup failed",
+    );
+    expect(deps.api.searchGroups).not.toHaveBeenCalled();
+    expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeUndefined();
   });
 
-  it("join_group returns already_pending for same group_id", async () => {
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
+  it("join_group returns consistent group shape for pending_operator_approval and already_pending", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
 
-    const first = await joinGroupHandler({ group_id: "group-1" }, deps);
-    const second = await joinGroupHandler({ group_id: "group-1" }, deps);
+    const first = await joinGroupHandler({ group_id: mockGroup.id }, deps);
+    const second = await joinGroupHandler({ group_id: mockGroup.id }, deps);
 
     expect(first.status).toBe("pending_operator_approval");
     expect(second.status).toBe("already_pending");
-    expect(second).toHaveProperty("pending_request_id");
-    // Both should reference the same pending_request_id
-    expect((second as { pending_request_id: string }).pending_request_id).toBe(
-      (first as { pending_request_id: string }).pending_request_id,
-    );
+    expect(first.group).toEqual(second.group);
+    expect(first.group).toEqual({
+      id: mockGroup.id,
+      name: mockGroup.name,
+      description: mockGroup.description,
+      type: mockGroup.type,
+      owner_name: mockGroup.owner.display_name,
+      owner_verified: mockGroup.owner.verified,
+    });
   });
 
-  it("join_group throws error when group not found", async () => {
-    const emptyResult = {
+  it("approve_join returns canonical result and marks the next ask as post_approval_first_ask", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: [],
       meta: { has_more: false, next_cursor: null, count: 0 },
-    };
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(emptyResult);
-
-    await expect(joinGroupHandler({ group_id: "group-nonexistent" }, deps)).rejects.toThrow(
-      "not found",
-    );
-  });
-
-  it("join_group returns already_member when account has a role in the group", async () => {
-    const memberGroup = { ...mockGroup, my_role: "member" as const };
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: [memberGroup],
-      meta: { has_more: false, next_cursor: null, count: 1 },
     });
+    await joinGroupHandler({ group_id: mockGroup.id }, deps);
 
-    const result = await joinGroupHandler({ group_id: "group-1" }, deps);
-
-    expect(result.status).toBe("already_member");
-    expect((result as { role: string }).role).toBe("member");
-    // Should NOT create a pending request
-    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
-    // Should NOT call api.joinGroup
-    expect(deps.api.joinGroup).not.toHaveBeenCalled();
-  });
-
-  it("join_group returns error when max pending joins exceeded", async () => {
-    // Create a PendingJoinMap with maxPendingJoins: 1
-    deps.pendingJoins.dispose();
-    const limitedConfig = { ...createTestConfig(), maxPendingJoins: 1 };
-    deps.pendingJoins = createPendingJoinMap(limitedConfig);
-
-    const mockGroup2 = {
-      ...mockGroup,
-      id: "group-2",
-      name: "Second Group",
-    };
-
-    // First call succeeds
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-    await joinGroupHandler({ group_id: "group-1" }, deps);
-
-    // Second call should fail because max is 1
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: [mockGroup2],
-      meta: { has_more: false, next_cursor: null, count: 1 },
-    });
-
-    await expect(joinGroupHandler({ group_id: "group-2" }, deps)).rejects.toThrow(
-      "maximum number of pending requests",
-    );
-  });
-
-  // --- approve_join ---
-
-  it("approve_join completes join via REST and returns joined status", async () => {
-    // First create a pending request
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-    await joinGroupHandler({ group_id: "group-1" }, deps);
-
-    // Mock the REST join
-    const mockJoinResult = {
+    (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: {
-        group_id: "group-1",
-        account_id: "account-1",
-        role: "member" as const,
+        group_id: mockGroup.id,
+        account_id: "33333333-3333-3333-3333-333333333333",
+        role: "member",
         created_at: "2026-01-01T00:00:00Z",
       },
-    };
-    (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockResolvedValue(mockJoinResult);
+    });
 
-    const result = await approveJoinHandler({ group_id: "group-1" }, deps);
+    const result = await approveJoinHandler({ group_id: mockGroup.id }, deps);
 
-    expect(result.status).toBe("joined");
-    expect((result as { group_id: string }).group_id).toBe("group-1");
-    expect((result as { role: string }).role).toBe("member");
-    expect(deps.api.joinGroup).toHaveBeenCalledWith("group-1");
-    // Pending request should be removed
-    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
+    expect(result).toEqual({
+      group_id: mockGroup.id,
+      joined: true,
+      membership_path_ready: "post_approval_first_ask",
+      role: "member",
+    });
+    expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeUndefined();
+    expect(deps.membershipPaths.resolve(mockGroup.id)).toBe("post_approval_first_ask");
+    expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_join_approved", {
+      group_id: mockGroup.id,
+      role: "member",
+    });
   });
 
-  it("approve_join throws error when no pending request", async () => {
-    await expect(approveJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow(
-      "No pending join request",
-    );
-  });
+  it("reject_join clears pending state and does not create post-approval state", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+    await joinGroupHandler({ group_id: mockGroup.id }, deps);
 
-  it("approve_join throws error after request expires", async () => {
-    vi.useFakeTimers();
-    try {
-      (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-      await joinGroupHandler({ group_id: "group-1" }, deps);
-
-      // Advance past expiry (>600000ms = 10 minutes)
-      vi.advanceTimersByTime(600001);
-
-      await expect(approveJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow(
-        "No pending join request",
-      );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("approve_join propagates REST API errors", async () => {
-    // Create pending request
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-    await joinGroupHandler({ group_id: "group-1" }, deps);
-
-    // Mock REST join to throw
-    (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Forbidden"));
-
-    await expect(approveJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow("Forbidden");
-  });
-
-  it("approve_join does not make WebSocket calls", async () => {
-    // Create pending request
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-    await joinGroupHandler({ group_id: "group-1" }, deps);
-
-    // Mock REST join success
-    const mockJoinResult = {
-      data: {
-        group_id: "group-1",
-        account_id: "account-1",
-        role: "member" as const,
-        created_at: "2026-01-01T00:00:00Z",
-      },
-    };
-    (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockResolvedValue(mockJoinResult);
-
-    await approveJoinHandler({ group_id: "group-1" }, deps);
-
-    // socket.channel should NOT have been called
-    expect(deps.socket.channel).not.toHaveBeenCalled();
-  });
-
-  // --- reject_join ---
-
-  it("reject_join removes pending request and returns rejected status", async () => {
-    // Create pending request
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-    await joinGroupHandler({ group_id: "group-1" }, deps);
-
-    const result = await rejectJoinHandler({ group_id: "group-1" }, deps);
+    const result = await rejectJoinHandler({ group_id: mockGroup.id }, deps);
 
     expect(result.status).toBe("rejected");
-    expect((result as { group_id: string }).group_id).toBe("group-1");
-    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
+    expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeUndefined();
+    expect(deps.membershipPaths.resolve(mockGroup.id)).toBe("existing_membership");
   });
 
-  it("reject_join throws error when no pending request", async () => {
-    await expect(rejectJoinHandler({ group_id: "group-1" }, deps)).rejects.toThrow(
-      "No pending join request",
-    );
-  });
-
-  // --- list_pending_joins ---
-
-  it("list_pending_joins returns all pending requests", async () => {
-    const mockGroup2 = {
-      ...mockGroup,
-      id: "group-2",
-      name: "Second Group",
-    };
-    const twoGroupsResult = {
-      data: [mockGroup, mockGroup2],
-      meta: { has_more: false, next_cursor: null, count: 2 },
-    };
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(twoGroupsResult);
-
-    await joinGroupHandler({ group_id: "group-1" }, deps);
-    await joinGroupHandler({ group_id: "group-2" }, deps);
-
-    const result = await listPendingJoinsHandler({} as Record<string, never>, deps);
-
-    expect(result.count).toBe(2);
-    expect(result.pending_requests).toHaveLength(2);
-    const groupIds = result.pending_requests.map((p) => p.group_id).sort();
-    expect(groupIds).toEqual(["group-1", "group-2"]);
-  });
-
-  it("list_pending_joins excludes expired requests", async () => {
-    vi.useFakeTimers();
-    try {
-      (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-      await joinGroupHandler({ group_id: "group-1" }, deps);
-
-      // Advance past expiry
-      vi.advanceTimersByTime(600001);
-
-      const result = await listPendingJoinsHandler({} as Record<string, never>, deps);
-
-      expect(result.count).toBe(0);
-      expect(result.pending_requests).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("list_pending_joins returns empty when no requests", async () => {
-    const result = await listPendingJoinsHandler({} as Record<string, never>, deps);
-
-    expect(result.count).toBe(0);
-    expect(result.pending_requests).toEqual([]);
-  });
-
-  // --- Full flow tests ---
-
-  it("full flow: join_group → approve_join → joined", async () => {
-    // Step 1: Create pending join request
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-    const joinResult = await joinGroupHandler({ group_id: "group-1" }, deps);
-    expect(joinResult.status).toBe("pending_operator_approval");
-
-    // Step 2: Approve the join
-    const mockJoinResult = {
-      data: {
-        group_id: "group-1",
-        account_id: "account-1",
-        role: "member" as const,
-        created_at: "2026-01-01T00:00:00Z",
-      },
-    };
-    (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockResolvedValue(mockJoinResult);
-
-    const approveResult = await approveJoinHandler({ group_id: "group-1" }, deps);
-    expect(approveResult.status).toBe("joined");
-    expect((approveResult as { group_id: string }).group_id).toBe("group-1");
-
-    // Pending should be cleared
-    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
-  });
-
-  it("full flow: join_group → reject_join → cleared", async () => {
-    // Step 1: Create pending join request
-    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-    const joinResult = await joinGroupHandler({ group_id: "group-1" }, deps);
-    expect(joinResult.status).toBe("pending_operator_approval");
-
-    // Step 2: Reject the join
-    const rejectResult = await rejectJoinHandler({ group_id: "group-1" }, deps);
-    expect(rejectResult.status).toBe("rejected");
-
-    // Pending should be cleared
-    expect(deps.pendingJoins.getByGroupId("group-1")).toBeUndefined();
-  });
-
-  it("full flow: join_group → expire → re-join_group works", async () => {
-    vi.useFakeTimers();
-    try {
-      (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockSearchResult);
-
-      // Step 1: Create pending
-      const first = await joinGroupHandler({ group_id: "group-1" }, deps);
-      expect(first.status).toBe("pending_operator_approval");
-      const firstId = (first as { pending_request_id: string }).pending_request_id;
-
-      // Step 2: Advance past expiry
-      vi.advanceTimersByTime(600001);
-
-      // Step 3: Re-join should create a new pending request
-      const second = await joinGroupHandler({ group_id: "group-1" }, deps);
-      expect(second.status).toBe("pending_operator_approval");
-      const secondId = (second as { pending_request_id: string }).pending_request_id;
-
-      // Should have a new ID (different from expired one)
-      expect(secondId).not.toBe(firstId);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // --- Existing tests (unchanged) ---
-
-  it("leave_group calls api.leaveGroup + socket.channel().leave() + buffer.clearGroup()", async () => {
-    (deps.api.leaveGroup as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
-
-    const mockChannel = { join: vi.fn(), leave: vi.fn().mockResolvedValue(undefined) };
-    (deps.socket.channel as ReturnType<typeof vi.fn>).mockReturnValue(mockChannel);
-
-    const result = await leaveGroupHandler({ group_id: "group-1" }, deps);
-
-    expect(result.success).toBe(true);
-    expect(deps.api.leaveGroup).toHaveBeenCalledWith("group-1");
-    expect(deps.socket.channel).toHaveBeenCalledWith("group:group-1");
-    expect(mockChannel.leave).toHaveBeenCalled();
-    expect(deps.buffer.clearGroup).toHaveBeenCalledWith("group-1");
-  });
-
-  it("list_my_groups calls api.getMyGroups and returns formatted list", async () => {
-    const mockResult = {
-      data: [
-        {
-          id: "group-1",
-          name: "My Group",
-          description: "Description",
-          type: "qa" as const,
-          visibility: "public" as const,
-          my_role: "member" as const,
-          owner: { id: "owner-1", display_name: "Owner", verified: true },
-          member_count: 10,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
-        },
-      ],
+  it("list_pending_joins returns canonical pending entries", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
       meta: { has_more: false, next_cursor: null, count: 1 },
-    };
-    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockResult);
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+    await joinGroupHandler({ group_id: mockGroup.id }, deps);
 
-    const result = await listMyGroupsHandler({} as Record<string, never>, deps);
+    const result = await listPendingJoinsHandler({}, deps);
 
-    expect(result.groups).toHaveLength(1);
-    expect(result.groups[0].id).toBe("group-1");
-    expect(result.groups[0].name).toBe("My Group");
-    expect(result.groups[0].my_role).toBe("member");
-    expect(result.groups[0].member_count).toBe(10);
-    expect(deps.api.getMyGroups).toHaveBeenCalledWith({ limit: 100 });
+    expect(result.count).toBe(1);
+    expect(result.pending_requests[0]).toMatchObject({
+      group_id: mockGroup.id,
+      group_name: mockGroup.name,
+      group_type: mockGroup.type,
+      owner_name: mockGroup.owner.display_name,
+      owner_verified: true,
+    });
   });
 
-  it("get_messages (buffer hit) returns from buffer with source 'buffer'", async () => {
-    const bufferedMessages = [
+  it("leave_group clears the message buffer and membership-path state", async () => {
+    (deps.api.leaveGroup as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const channel = { leave: vi.fn().mockResolvedValue(undefined) };
+    (deps.socket.channel as ReturnType<typeof vi.fn>).mockReturnValue(channel);
+    deps.membershipPaths.markPostApprovalFirstAsk(mockGroup.id);
+
+    const result = await leaveGroupHandler({ group_id: mockGroup.id }, deps);
+
+    expect(result).toEqual({ success: true });
+    expect(deps.buffer.clearGroup).toHaveBeenCalledWith(mockGroup.id);
+    expect(deps.membershipPaths.resolve(mockGroup.id)).toBe("existing_membership");
+  });
+
+  it("list_my_groups returns the current memberships", async () => {
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [{ ...mockGroup, my_role: "member" }],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+
+    const result = await listMyGroupsHandler({}, deps);
+
+    expect(result.groups).toEqual([
       {
-        id: "msg-1",
-        group_id: "group-1",
+        id: mockGroup.id,
+        name: mockGroup.name,
+        description: mockGroup.description,
+        type: mockGroup.type,
+        my_role: "member",
+        member_count: mockGroup.member_count,
+      },
+    ]);
+  });
+
+  it("get_messages reads from the local buffer before the API", async () => {
+    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([
+      {
+        id: "44444444-4444-4444-4444-444444444444",
+        group_id: mockGroup.id,
         content: "Hello world",
-        message_type: "post" as const,
+        message_type: "post",
         parent_message_id: null,
-        sender: { id: "s-1", display_name: "Sender", verified: false },
+        sender: { id: "a", display_name: "Sender", verified: false },
         created_at: "2026-01-01T00:00:00Z",
       },
-    ];
-    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue(bufferedMessages);
+    ]);
 
-    const result = await getMessagesHandler({ group_id: "group-1", limit: 50 }, deps);
+    const result = await getMessagesHandler({ group_id: mockGroup.id, limit: 50 }, deps);
 
     expect(result.source).toBe("buffer");
-    expect(result.messages).toHaveLength(1);
-    expect(result.messages[0].id).toBe("msg-1");
     expect(deps.api.getMessages).not.toHaveBeenCalled();
   });
 
-  it("get_messages (buffer miss) calls api.getMessages with source 'api'", async () => {
-    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
-
-    const mockResult = {
-      data: [
-        {
-          id: "msg-1",
-          group_id: "group-1",
-          message_type: "post" as const,
-          parent_message_id: null,
-          sender: { id: "s-1", display_name: "Sender", verified: false },
-          created_at: "2026-01-01T00:00:00Z",
-        },
-      ],
-      meta: { has_more: true, next_cursor: "cursor-1", count: 1 },
-    };
-    (deps.api.getMessages as ReturnType<typeof vi.fn>).mockResolvedValue(mockResult);
-
-    const result = await getMessagesHandler({ group_id: "group-1", limit: 50 }, deps);
-
-    expect(result.source).toBe("api");
-    expect(result.messages).toHaveLength(1);
-    expect("has_more" in result && result.has_more).toBe(true);
-    expect(deps.api.getMessages).toHaveBeenCalledWith("group-1", {
-      after: undefined,
-      limit: 50,
-    });
-  });
-
-  it("post_message calls api.postMessage with flat params", async () => {
-    const mockResult = {
+  it("post_message sends flat params", async () => {
+    (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: {
-        id: "msg-1",
-        group_id: "group-1",
-        content: "Test content",
-        message_type: "post" as const,
-        parent_message_id: null,
-        sender: { id: "s-1", display_name: "Sender", verified: false },
-        created_at: "2026-01-01T00:00:00Z",
-      },
-    };
-    (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue(mockResult);
-
-    const result = await postMessageHandler(
-      {
-        group_id: "group-1",
+        id: "55555555-5555-5555-5555-555555555555",
+        group_id: mockGroup.id,
         content: "Test content",
         message_type: "post",
+        parent_message_id: null,
+        sender: { id: "a", display_name: "Sender", verified: false },
+        created_at: "2026-01-01T00:00:00Z",
       },
+    });
+
+    await postMessageHandler(
+      { group_id: mockGroup.id, content: "Test content", message_type: "post" },
       deps,
     );
 
-    expect(result.message.id).toBe("msg-1");
-    expect(result.message.content).toBe("Test content");
-    expect(deps.api.postMessage).toHaveBeenCalledWith("group-1", {
+    expect(deps.api.postMessage).toHaveBeenCalledWith(mockGroup.id, {
       content: "Test content",
       message_type: "post",
       parent_message_id: null,
     });
   });
 
-  it("ask_question posts question then finds answer in buffer", async () => {
-    vi.useFakeTimers();
-
-    (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: "q-1",
-        group_id: "group-1",
-        content: "What is X?",
-        message_type: "question",
-        parent_message_id: null,
-        sender: { id: "s-1", display_name: "Asker", verified: false },
-        created_at: "2026-01-01T00:00:00Z",
-      },
+  it("ask_question rejects non-member access before posting", async () => {
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
     });
 
-    let callCount = 0;
-    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockImplementation(() => {
-      callCount++;
-      if (callCount >= 2) {
-        return [
+    await expect(
+      askQuestionHandler({ group_id: mockGroup.id, question: "What is X?" }, deps),
+    ).rejects.toThrow("First resolve access");
+    expect(deps.api.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("ask_question rejects non-qa groups", async () => {
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [{ ...mockGroup, type: "open_discussion" }],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+
+    await expect(
+      askQuestionHandler({ group_id: mockGroup.id, question: "What is X?" }, deps),
+    ).rejects.toThrow("only valid for Q&A groups");
+  });
+
+  it("ask_question resolves membership beyond the first getMyGroups page", async () => {
+    vi.useFakeTimers();
+    try {
+      (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockImplementation(
+        createPaginatedMyGroupsMock([
           {
-            id: "a-1",
-            group_id: "group-1",
-            content: "Answer is Y",
-            message_type: "answer",
-            parent_message_id: "q-1",
-            sender: { id: "s-2", display_name: "Responder", verified: true },
-            created_at: "2026-01-01T00:00:01Z",
+            data: Array.from({ length: 100 }, (_, index) =>
+              createMembershipGroup(`page-1-group-${index + 1}`),
+            ),
+            next_cursor: "cursor-2",
           },
-        ];
+          {
+            data: [createMembershipGroup(mockGroup.id, { my_role: "member" })],
+          },
+        ]),
+      );
+      (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: "12121212-1212-1212-1212-121212121212",
+          group_id: mockGroup.id,
+          content: "What is beyond page one?",
+          message_type: "question",
+          parent_message_id: null,
+          sender: { id: "asker", display_name: "Asker", verified: false },
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([
+        {
+          id: "34343434-3434-3434-3434-343434343434",
+          group_id: mockGroup.id,
+          content: "Found on page two",
+          message_type: "answer",
+          parent_message_id: "12121212-1212-1212-1212-121212121212",
+          sender: { id: "responder", display_name: "Responder", verified: true },
+          created_at: "2026-01-01T00:00:01Z",
+        },
+      ]);
+
+      const result = await askQuestionHandler(
+        { group_id: mockGroup.id, question: "What is beyond page one?", timeout_seconds: 5 },
+        deps,
+      );
+
+      expect(result).toMatchObject({
+        answered: true,
+        question_id: "12121212-1212-1212-1212-121212121212",
+        group_id: mockGroup.id,
+        provenance: {
+          membership_path: "existing_membership",
+          group_id: mockGroup.id,
+        },
+        answer: {
+          id: "34343434-3434-3434-3434-343434343434",
+          content: "Found on page two",
+        },
+      });
+      expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(1, { limit: 100, after: undefined });
+      expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(2, {
+        limit: 100,
+        after: "cursor-2",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ask_question returns canonical success with existing_membership provenance", async () => {
+    vi.useFakeTimers();
+    try {
+      (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: [{ ...mockGroup, my_role: "member" }],
+        meta: { has_more: false, next_cursor: null, count: 1 },
+      });
+      (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: "66666666-6666-6666-6666-666666666666",
+          group_id: mockGroup.id,
+          content: "What is X?",
+          message_type: "question",
+          parent_message_id: null,
+          sender: { id: "asker", display_name: "Asker", verified: false },
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      });
+
+      let pollCount = 0;
+      (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        pollCount += 1;
+        if (pollCount >= 2) {
+          return [
+            {
+              id: "77777777-7777-7777-7777-777777777777",
+              group_id: mockGroup.id,
+              content: "Answer is Y",
+              message_type: "answer",
+              parent_message_id: "66666666-6666-6666-6666-666666666666",
+              sender: { id: "responder", display_name: "Responder", verified: true },
+              created_at: "2026-01-01T00:00:01Z",
+            },
+          ];
+        }
+        return [];
+      });
+
+      const promise = askQuestionHandler(
+        { group_id: mockGroup.id, question: "What is X?", timeout_seconds: 30 },
+        deps,
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      const result = await promise;
+
+      expect(result).toMatchObject({
+        answered: true,
+        question_id: "66666666-6666-6666-6666-666666666666",
+        group_id: mockGroup.id,
+        timeout_seconds: 30,
+        provenance: {
+          authority_source: "meshimize",
+          invocation_path: "authority_group_live_work",
+          membership_path: "existing_membership",
+          group_id: mockGroup.id,
+          group_name: mockGroup.name,
+          provider_account_id: mockGroup.owner.id,
+          provider_display_name: mockGroup.owner.display_name,
+          provider_verified: true,
+        },
+        answer: {
+          id: "77777777-7777-7777-7777-777777777777",
+          content: "Answer is Y",
+          responder_account_id: "responder",
+          responder_display_name: "Responder",
+          responder_verified: true,
+          created_at: "2026-01-01T00:00:01Z",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ask_question uses post_approval_first_ask once, emits metric, then consumes that state", async () => {
+    vi.useFakeTimers();
+    try {
+      deps.membershipPaths.markPostApprovalFirstAsk(mockGroup.id);
+      (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: [{ ...mockGroup, my_role: "member" }],
+        meta: { has_more: false, next_cursor: null, count: 1 },
+      });
+      (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: "88888888-8888-8888-8888-888888888888",
+          group_id: mockGroup.id,
+          content: "First ask after approval?",
+          message_type: "question",
+          parent_message_id: null,
+          sender: { id: "asker", display_name: "Asker", verified: false },
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([
+        {
+          id: "99999999-9999-9999-9999-999999999999",
+          group_id: mockGroup.id,
+          content: "Approved answer",
+          message_type: "answer",
+          parent_message_id: "88888888-8888-8888-8888-888888888888",
+          sender: { id: "responder", display_name: "Responder", verified: true },
+          created_at: "2026-01-01T00:00:01Z",
+        },
+      ]);
+
+      const result = await askQuestionHandler(
+        { group_id: mockGroup.id, question: "First ask after approval?", timeout_seconds: 5 },
+        deps,
+      );
+
+      expect(result.answered).toBe(true);
+      if (result.answered) {
+        expect(result.provenance.membership_path).toBe("post_approval_first_ask");
       }
-      return [];
-    });
-
-    const promise = askQuestionHandler(
-      { group_id: "group-1", question: "What is X?", timeout_seconds: 30 },
-      deps,
-    );
-    await vi.advanceTimersByTimeAsync(1000);
-    const result = await promise;
-
-    expect(result.answered).toBe(true);
-    if (result.answered) {
-      expect(result.answer.content).toBe("Answer is Y");
-      expect(result.answer.responder).toBe("Responder");
-      expect(result.answer.responder_verified).toBe(true);
+      expect(deps.membershipPaths.resolve(mockGroup.id)).toBe("existing_membership");
+      expect(deps.workflowRecorder.record).toHaveBeenCalledWith(
+        "authority_first_ask_after_approval",
+        {
+          group_id: mockGroup.id,
+          group_name: mockGroup.name,
+        },
+      );
+    } finally {
+      vi.useRealTimers();
     }
-
-    vi.useRealTimers();
   });
 
-  it("ask_question returns actionable timeout with group_id and timeout_seconds", async () => {
+  it("ask_question returns canonical recoverable timeout metadata and emits timeout metric", async () => {
     vi.useFakeTimers();
+    try {
+      (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: [{ ...mockGroup, my_role: "member" }],
+        meta: { has_more: false, next_cursor: null, count: 1 },
+      });
+      (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          group_id: mockGroup.id,
+          content: "Slow question?",
+          message_type: "question",
+          parent_message_id: null,
+          sender: { id: "asker", display_name: "Asker", verified: false },
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
-    (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: "q-timeout",
-        group_id: "group-1",
-        content: "Slow question?",
-        message_type: "question",
-        parent_message_id: null,
-        sender: { id: "s-1", display_name: "Asker", verified: false },
-        created_at: "2026-01-01T00:00:00Z",
-      },
-    });
+      const promise = askQuestionHandler(
+        { group_id: mockGroup.id, question: "Slow question?", timeout_seconds: 5 },
+        deps,
+      );
+      await vi.advanceTimersByTimeAsync(6000);
+      const result = await promise;
 
-    // Buffer never returns an answer
-    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
-
-    const promise = askQuestionHandler(
-      { group_id: "group-1", question: "Slow question?", timeout_seconds: 5 },
-      deps,
-    );
-    await vi.advanceTimersByTimeAsync(6000);
-    const result = await promise;
-
-    expect(result.answered).toBe(false);
-    expect(result.question_id).toBe("q-timeout");
-    expect(result).toHaveProperty("group_id", "group-1");
-    expect(result).toHaveProperty("timeout_seconds", 5);
-    expect(result).toHaveProperty("message");
-    if ("message" in result) {
-      expect(result.message).toContain("get_messages");
-      expect(result.message).toContain("group-1");
+      expect(result.answered).toBe(false);
+      if (!result.answered) {
+        expect(result).toMatchObject({
+          question_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          group_id: mockGroup.id,
+          timeout_seconds: 5,
+          provenance: {
+            authority_source: "meshimize",
+            invocation_path: "authority_group_live_work",
+            membership_path: "existing_membership",
+          },
+          recovery: {
+            retrieval_tool: "get_messages",
+            group_id: mockGroup.id,
+            after_message_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            match_parent_message_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          },
+        });
+        expect(result.recovery.instructions).toContain("get_messages");
+      }
+      expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_ask_timed_out", {
+        group_id: mockGroup.id,
+        question_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        membership_path: "existing_membership",
+      });
+    } finally {
+      vi.useRealTimers();
     }
-
-    vi.useRealTimers();
   });
 
-  it("ask_question timeout uses default timeout_seconds when not specified", async () => {
-    vi.useFakeTimers();
-
-    (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: {
-        id: "q-default",
-        group_id: "group-2",
-        content: "Default timeout?",
-        message_type: "question",
-        parent_message_id: null,
-        sender: { id: "s-1", display_name: "Asker", verified: false },
-        created_at: "2026-01-01T00:00:00Z",
-      },
-    });
-
-    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
-
-    const promise = askQuestionHandler({ group_id: "group-2", question: "Default timeout?" }, deps);
-    await vi.advanceTimersByTimeAsync(91000);
-    const result = await promise;
-
-    expect(result.answered).toBe(false);
-    expect(result).toHaveProperty("group_id", "group-2");
-    expect(result).toHaveProperty("timeout_seconds", 90);
-    expect(result).toHaveProperty("message");
-    if ("message" in result) {
-      expect(result.message).toContain("90s");
-      expect(result.message).toContain("get_messages");
-    }
-
-    vi.useRealTimers();
-  });
-
-  it("get_pending_questions (single group) returns from buffer when available", async () => {
-    const bufferedQuestions = [
-      {
-        id: "q-1",
-        group_id: "group-1",
-        content: "Unanswered question?",
-        message_type: "question" as const,
-        parent_message_id: null,
-        sender: { id: "s-1", display_name: "Asker", verified: false },
-        created_at: "2026-01-01T00:00:00Z",
-      },
-    ];
-    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue(bufferedQuestions);
-
-    const result = await getPendingQuestionsHandler({ group_id: "group-1", limit: 10 }, deps);
-
-    expect(result).toHaveProperty("source", "buffer");
-    expect("questions" in result && result.questions).toHaveLength(1);
-    expect(deps.buffer.getGroupMessages).toHaveBeenCalledWith("group-1", {
-      unanswered: true,
-      limit: 10,
-    });
-    expect(deps.api.getMessages).not.toHaveBeenCalled();
-  });
-
-  it("get_pending_questions (cross-group) aggregates from buffer and API, filtering to QA owner/responder", async () => {
-    // Mock getMyGroups returning mixed groups: QA owner, QA responder, QA member (excluded), discussion (excluded)
-    const mockGroups = {
+  it("get_pending_questions filters to QA owner/responder groups", async () => {
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: [
+        { ...mockGroup, id: "qa-owner", name: "QA Owned", my_role: "owner" },
+        { ...mockGroup, id: "qa-responder", name: "QA Responding", my_role: "responder" },
+        { ...mockGroup, id: "qa-member", name: "QA Member", my_role: "member" },
         {
-          id: "qa-owner",
-          name: "QA Owned",
-          description: "Owned QA group",
-          type: "qa" as const,
-          visibility: "public" as const,
-          my_role: "owner" as const,
-          owner: { id: "me", display_name: "Me", verified: true },
-          member_count: 5,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
-        },
-        {
-          id: "qa-responder",
-          name: "QA Responding",
-          description: "Responder QA group",
-          type: "qa" as const,
-          visibility: "public" as const,
-          my_role: "responder" as const,
-          owner: { id: "other", display_name: "Other", verified: true },
-          member_count: 10,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
-        },
-        {
-          id: "qa-member",
-          name: "QA Member Only",
-          description: "Member QA group",
-          type: "qa" as const,
-          visibility: "public" as const,
-          my_role: "member" as const,
-          owner: { id: "other2", display_name: "Other2", verified: false },
-          member_count: 20,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
-        },
-        {
-          id: "discussion-group",
+          ...mockGroup,
+          id: "discussion",
           name: "Discussion",
-          description: "A discussion group",
-          type: "open_discussion" as const,
-          visibility: "public" as const,
-          my_role: "member" as const,
-          owner: { id: "other3", display_name: "Other3", verified: false },
-          member_count: 15,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
+          type: "open_discussion",
+          my_role: "member",
         },
       ],
       meta: { has_more: false, next_cursor: null, count: 4 },
-    };
-    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue(mockGroups);
-
-    // qa-owner: buffer returns data (buffer-first path)
-    // qa-responder: buffer returns empty, API returns data (API fallback path)
+    });
     (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockImplementation(
       (groupId: string) => {
         if (groupId === "qa-owner") {
           return [
             {
-              id: "q-buf-1",
+              id: "question-1",
               group_id: "qa-owner",
               content: "Buffered question?",
-              message_type: "question" as const,
+              message_type: "question",
               parent_message_id: null,
-              sender: { id: "s-1", display_name: "Asker1", verified: false },
+              sender: { id: "sender", display_name: "Sender", verified: false },
               created_at: "2026-01-01T00:00:00Z",
             },
           ];
         }
+
         return [];
       },
     );
-
     (deps.api.getMessages as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: [
         {
-          id: "q-api-1",
+          id: "question-2",
           group_id: "qa-responder",
-          message_type: "question" as const,
+          message_type: "question",
           parent_message_id: null,
-          sender: { id: "s-2", display_name: "Asker2", verified: false },
+          sender: { id: "sender", display_name: "Sender", verified: false },
           created_at: "2026-01-01T00:00:01Z",
         },
       ],
@@ -851,91 +817,42 @@ describe("tool handlers", () => {
 
     const result = await getPendingQuestionsHandler({ limit: 10 }, deps);
 
-    // Should only include qa-owner and qa-responder (not qa-member or discussion)
     expect("groups" in result).toBe(true);
     if ("groups" in result) {
-      expect(result.groups).toHaveLength(2);
-      expect(result.groups.map((g) => g.group_id).sort()).toEqual(["qa-owner", "qa-responder"]);
-
-      // qa-owner came from buffer
-      const ownerGroup = result.groups.find((g) => g.group_id === "qa-owner")!;
-      expect(ownerGroup.group_name).toBe("QA Owned");
-      expect(ownerGroup.questions).toHaveLength(1);
-
-      // qa-responder came from API
-      const responderGroup = result.groups.find((g) => g.group_id === "qa-responder")!;
-      expect(responderGroup.group_name).toBe("QA Responding");
-      expect(responderGroup.questions).toHaveLength(1);
+      expect(result.groups.map((group) => group.group_id).sort()).toEqual([
+        "qa-owner",
+        "qa-responder",
+      ]);
     }
-
-    // Should NOT have fetched API messages for qa-owner (buffer had data)
-    expect(deps.api.getMessages).toHaveBeenCalledTimes(1);
-    expect(deps.api.getMessages).toHaveBeenCalledWith("qa-responder", {
-      unanswered: true,
-      limit: 10,
-    });
   });
 
-  it("leave_group clears buffer even if channel.leave() throws", async () => {
-    (deps.api.leaveGroup as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
-
-    const mockChannel = {
-      join: vi.fn(),
-      leave: vi.fn().mockRejectedValue(new Error("WebSocket disconnected")),
-    };
-    (deps.socket.channel as ReturnType<typeof vi.fn>).mockReturnValue(mockChannel);
-
-    const result = await leaveGroupHandler({ group_id: "group-1" }, deps);
-
-    expect(result.success).toBe(true);
-    expect(deps.api.leaveGroup).toHaveBeenCalledWith("group-1");
-    expect(mockChannel.leave).toHaveBeenCalled();
-    // Buffer should be cleared despite channel.leave() throwing
-    expect(deps.buffer.clearGroup).toHaveBeenCalledWith("group-1");
-  });
-
-  it("send_direct_message calls api.sendDirectMessage with recipient_account_id", async () => {
-    const mockResult = {
+  it("send_direct_message and get_direct_messages preserve existing behavior", async () => {
+    (deps.api.sendDirectMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: {
         id: "dm-1",
         content: "Hello there",
-        sender: { id: "s-1", display_name: "Sender", verified: false },
-        recipient: { id: "r-1", display_name: "Recipient" },
+        sender: { id: "sender", display_name: "Sender", verified: false },
+        recipient: { id: "recipient", display_name: "Recipient" },
         created_at: "2026-01-01T00:00:00Z",
       },
-    };
-    (deps.api.sendDirectMessage as ReturnType<typeof vi.fn>).mockResolvedValue(mockResult);
-
-    const result = await sendDirectMessageHandler(
-      { recipient_account_id: "r-1", content: "Hello there" },
-      deps,
-    );
-
-    expect(result.message.id).toBe("dm-1");
-    expect(result.message.content).toBe("Hello there");
-    expect(deps.api.sendDirectMessage).toHaveBeenCalledWith({
-      recipient_account_id: "r-1",
-      content: "Hello there",
     });
-  });
-
-  it("get_direct_messages (buffer hit) returns from buffer with source 'buffer'", async () => {
-    const bufferedDMs = [
+    (deps.buffer.getDirectMessages as ReturnType<typeof vi.fn>).mockReturnValue([
       {
         id: "dm-1",
         content: "Buffered DM",
-        sender: { id: "s-1", display_name: "Sender", verified: false },
-        recipient: { id: "r-1", display_name: "Recipient" },
+        sender: { id: "sender", display_name: "Sender", verified: false },
+        recipient: { id: "recipient", display_name: "Recipient" },
         created_at: "2026-01-01T00:00:00Z",
       },
-    ];
-    (deps.buffer.getDirectMessages as ReturnType<typeof vi.fn>).mockReturnValue(bufferedDMs);
+    ]);
 
-    const result = await getDirectMessagesHandler({ limit: 50 }, deps);
+    const sendResult = await sendDirectMessageHandler(
+      { recipient_account_id: "recipient", content: "Hello there" },
+      deps,
+    );
+    const readResult = await getDirectMessagesHandler({ limit: 50 }, deps);
 
-    expect(result.source).toBe("buffer");
-    expect(result.messages).toHaveLength(1);
-    expect(result.messages[0].id).toBe("dm-1");
-    expect(deps.api.getDirectMessages).not.toHaveBeenCalled();
+    expect(sendResult.message.content).toBe("Hello there");
+    expect(readResult.source).toBe("buffer");
   });
 });

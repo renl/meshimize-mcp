@@ -1,22 +1,61 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { afterEach, describe, expect, it } from "vitest";
 import { MeshimizeAPI } from "../src/api/client.js";
+import { MessageBuffer } from "../src/buffer/message-buffer.js";
+import { loadConfig } from "../src/config.js";
+import { createAuthorityLookupMap } from "../src/state/authority-lookups.js";
+import { createMembershipPathMap } from "../src/state/membership-paths.js";
+import { createPendingJoinMap } from "../src/state/pending-joins.js";
+import { askQuestionHandler } from "../src/tools/messages.js";
+import { searchGroupsHandler } from "../src/tools/groups.js";
+import type { ToolDependencies } from "../src/tools/index.js";
 import { PhoenixSocket } from "../src/ws/client.js";
 
-// Only run when INTEGRATION=true — skipped in CI
 const runIntegration = process.env.INTEGRATION === "true";
 const describeIntegration = runIntegration ? describe : describe.skip;
 
 describeIntegration("Integration Tests", () => {
-  // Track sockets for cleanup
   const socketsToCleanup: PhoenixSocket[] = [];
+  const pendingJoinMaps: Array<ReturnType<typeof createPendingJoinMap>> = [];
+  const authorityLookupMaps: Array<ReturnType<typeof createAuthorityLookupMap>> = [];
 
   afterEach(() => {
     for (const socket of socketsToCleanup) {
       socket.disconnect();
     }
     socketsToCleanup.length = 0;
+
+    for (const pendingJoins of pendingJoinMaps) {
+      pendingJoins.dispose();
+    }
+    pendingJoinMaps.length = 0;
+
+    for (const authorityLookups of authorityLookupMaps) {
+      authorityLookups.dispose();
+    }
+    authorityLookupMaps.length = 0;
   });
+
+  function createLiveDeps(
+    api: MeshimizeAPI,
+    socket: PhoenixSocket,
+    buffer: MessageBuffer,
+  ): ToolDependencies {
+    const config = loadConfig();
+    const pendingJoins = createPendingJoinMap(config);
+    const authorityLookups = createAuthorityLookupMap();
+    pendingJoinMaps.push(pendingJoins);
+    authorityLookupMaps.push(authorityLookups);
+
+    return {
+      api,
+      socket,
+      buffer,
+      pendingJoins,
+      authorityLookups,
+      membershipPaths: createMembershipPathMap(),
+      workflowRecorder: { record: () => {} },
+    };
+  }
 
   it("loadConfig loads from environment variables", () => {
     const config = loadConfig();
@@ -63,15 +102,36 @@ describeIntegration("Integration Tests", () => {
     expect(socket.getState()).toBe("disconnected");
   }, 15000);
 
-  it("Full startup sequence — account + group channels joined", async () => {
+  it("search_groups performs live discovery plus membership cross-reference", async () => {
     const config = loadConfig();
     const api = new MeshimizeAPI(config);
+    const wsUrl = `${config.wsUrl}?token=${encodeURIComponent(config.apiKey)}&vsn=2.0.0`;
+    const socket = new PhoenixSocket(wsUrl, {
+      heartbeatIntervalMs: config.heartbeatIntervalMs,
+      reconnectIntervalMs: config.reconnectIntervalMs,
+      maxReconnectAttempts: config.maxReconnectAttempts,
+    });
+    socketsToCleanup.push(socket);
 
-    // Verify account
-    const { data: account } = await api.getAccount();
-    expect(account.id).toBeDefined();
+    const deps = createLiveDeps(api, socket, new MessageBuffer(config.bufferSize));
+    const result = await searchGroupsHandler({ limit: 10 }, deps);
 
-    // Connect WebSocket
+    expect(Array.isArray(result.groups)).toBe(true);
+    if (result.groups.length > 0) {
+      expect(result.groups[0]).toHaveProperty("is_member");
+      expect(result.groups[0]).toHaveProperty("my_role");
+    }
+  }, 20000);
+
+  it("ask_question live boundary returns either an answer or recoverable timeout metadata", async () => {
+    const groupId = process.env.MESHIMIZE_INTEGRATION_QA_GROUP_ID;
+    if (!groupId) {
+      return;
+    }
+
+    const config = loadConfig();
+    const api = new MeshimizeAPI(config);
+    const buffer = new MessageBuffer(config.bufferSize);
     const wsUrl = `${config.wsUrl}?token=${encodeURIComponent(config.apiKey)}&vsn=2.0.0`;
     const socket = new PhoenixSocket(wsUrl, {
       heartbeatIntervalMs: config.heartbeatIntervalMs,
@@ -81,27 +141,35 @@ describeIntegration("Integration Tests", () => {
     socketsToCleanup.push(socket);
 
     await socket.connect();
-    expect(socket.getState()).toBe("connected");
 
-    // Join account channel
+    const { data: account } = await api.getAccount();
     const accountChannel = socket.channel(`account:${account.id}`);
     await accountChannel.join();
-    expect(accountChannel.getState()).toBe("joined");
+    const groupChannel = socket.channel(`group:${groupId}`);
+    await groupChannel.join();
 
-    // Get group memberships
-    const groups = await api.getMyGroups({ limit: 100 });
-    expect(Array.isArray(groups.data)).toBe(true);
+    const deps = createLiveDeps(api, socket, buffer);
 
-    // Join a sample of group channels (limit to avoid timeout with many groups)
-    const sampleGroups = groups.data.slice(0, 3);
-    for (const group of sampleGroups) {
-      const ch = socket.channel(`group:${group.id}`);
-      await ch.join();
-      expect(ch.getState()).toBe("joined");
+    const result = await askQuestionHandler(
+      {
+        group_id: groupId,
+        question: `Integration test question at ${new Date().toISOString()}`,
+        timeout_seconds: 5,
+      },
+      deps,
+    );
+
+    expect(result.group_id).toBe(groupId);
+    expect(result.provenance.authority_source).toBe("meshimize");
+    expect(result.provenance.invocation_path).toBe("authority_group_live_work");
+
+    if (result.answered) {
+      expect(result.answer.content.length).toBeGreaterThan(0);
+      expect(result.answer.responder_account_id).toBeDefined();
+    } else {
+      expect(result.recovery.retrieval_tool).toBe("get_messages");
+      expect(result.recovery.after_message_id).toBe(result.question_id);
+      expect(result.recovery.match_parent_message_id).toBe(result.question_id);
     }
-
-    // Clean up
-    socket.disconnect();
-    expect(socket.getState()).toBe("disconnected");
   }, 30000);
 });
