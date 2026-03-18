@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createPendingJoinMap } from "../../src/state/pending-joins.js";
 import type { PendingJoinMap } from "../../src/state/pending-joins.js";
-import type { PendingJoinRequest } from "../../src/types/pending-joins.js";
 import type { Config } from "../../src/config.js";
 import { loadConfig } from "../../src/config.js";
 
@@ -20,19 +19,19 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
   };
 }
 
-function makeGroup(id: string = "group-1"): PendingJoinRequest["group"] {
+type PendingJoinGroupInput = Parameters<PendingJoinMap["add"]>[0];
+
+function makeGroup(id: string = "group-1"): PendingJoinGroupInput {
   return {
     id,
     name: `Test Group ${id}`,
     description: "A test group",
     type: "open_discussion",
-    visibility: "public",
     owner: {
       id: "owner-1",
       display_name: "Test Owner",
       verified: true,
     },
-    member_count: 5,
   };
 }
 
@@ -51,8 +50,13 @@ describe("PendingJoinMap", () => {
       const request = map.add(group);
 
       expect(request.id).toBeDefined();
-      expect(request.group).toEqual(group);
-      expect(request.status).toBe("pending");
+      expect(request.group_id).toBe(group.id);
+      expect(request.group_name).toBe(group.name);
+      expect(request.group_type).toBe(group.type);
+      expect(request.group_description).toBe(group.description);
+      expect(request.owner_account_id).toBe(group.owner.id);
+      expect(request.owner_display_name).toBe(group.owner.display_name);
+      expect(request.owner_verified).toBe(group.owner.verified);
       expect(request.created_at).toBeDefined();
       expect(request.expires_at).toBeDefined();
 
@@ -183,8 +187,7 @@ describe("PendingJoinMap", () => {
 
       // Without prune-before-capacity-check, this would throw
       const request = map.add(makeGroup("g-new"));
-      expect(request.group.id).toBe("g-new");
-      expect(request.status).toBe("pending");
+      expect(request.group_id).toBe("g-new");
     });
 
     it("creates fresh entry when expired entry exists for same group_id", () => {
@@ -199,7 +202,6 @@ describe("PendingJoinMap", () => {
       // Without prune-before-idempotency-check, this could return stale entry
       const fresh = map.add(makeGroup("g-stale"));
       expect(fresh.id).not.toBe(originalId);
-      expect(fresh.status).toBe("pending");
       expect(new Date(fresh.expires_at).getTime()).toBeGreaterThan(Date.now());
     });
   });
@@ -245,7 +247,7 @@ describe("PendingJoinMap", () => {
 
       const pending = shortMap.listPending();
       expect(pending).toHaveLength(2);
-      expect(pending.map((p) => p.group.id).sort()).toEqual(["g-long-1", "g-long-2"]);
+      expect(pending.map((p) => p.group_id).sort()).toEqual(["g-long-1", "g-long-2"]);
     });
   });
 

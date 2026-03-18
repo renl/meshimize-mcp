@@ -3,6 +3,9 @@ import type { MeshimizeAPI } from "../api/client.js";
 import type { PhoenixSocket } from "../ws/client.js";
 import type { MessageBuffer } from "../buffer/message-buffer.js";
 import type { PendingJoinMap } from "../state/pending-joins.js";
+import type { AuthorityLookupMap } from "../state/authority-lookups.js";
+import type { MembershipPathMap } from "../state/membership-paths.js";
+import type { WorkflowSupportRecorder } from "../types/workflow.js";
 
 import {
   registerSearchGroups,
@@ -26,6 +29,9 @@ export interface ToolDependencies {
   socket: PhoenixSocket;
   buffer: MessageBuffer;
   pendingJoins: PendingJoinMap;
+  authorityLookups: AuthorityLookupMap;
+  membershipPaths: MembershipPathMap;
+  workflowRecorder: WorkflowSupportRecorder;
 }
 
 /**

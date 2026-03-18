@@ -1,9 +1,21 @@
 import crypto from "node:crypto";
-import type { PendingJoinRequest } from "../types/pending-joins.js";
+import type { PendingJoinRequest } from "../types/workflow.js";
 import type { Config } from "../config.js";
 
+interface PendingJoinGroupInput {
+  id: string;
+  name: string;
+  description: string | null;
+  type: PendingJoinRequest["group_type"];
+  owner: {
+    id: string;
+    display_name: string;
+    verified: boolean;
+  };
+}
+
 export interface PendingJoinMap {
-  add(group: PendingJoinRequest["group"]): PendingJoinRequest;
+  add(group: PendingJoinGroupInput): PendingJoinRequest;
   getByGroupId(groupId: string): PendingJoinRequest | undefined;
   getById(id: string): PendingJoinRequest | undefined;
   remove(groupId: string): void;
@@ -25,10 +37,9 @@ class PendingJoinMapImpl implements PendingJoinMap {
     this.pruneInterval.unref?.();
   }
 
-  add(group: PendingJoinRequest["group"]): PendingJoinRequest {
+  add(group: PendingJoinGroupInput): PendingJoinRequest {
     this.pruneExpired();
 
-    // Idempotent: return existing entry if one exists for this group
     const existing = this.map.get(group.id);
     if (existing) {
       return existing;
@@ -43,10 +54,15 @@ class PendingJoinMapImpl implements PendingJoinMap {
     const now = Date.now();
     const request: PendingJoinRequest = {
       id: crypto.randomUUID(),
-      group,
+      group_id: group.id,
+      group_name: group.name,
+      group_type: group.type,
+      group_description: group.description,
+      owner_account_id: group.owner.id,
+      owner_display_name: group.owner.display_name,
+      owner_verified: group.owner.verified,
       created_at: new Date(now).toISOString(),
       expires_at: new Date(now + this.joinTimeoutMs).toISOString(),
-      status: "pending",
     };
 
     this.map.set(group.id, request);
@@ -55,18 +71,14 @@ class PendingJoinMapImpl implements PendingJoinMap {
 
   getByGroupId(groupId: string): PendingJoinRequest | undefined {
     this.pruneExpired();
-    const entry = this.map.get(groupId);
-    if (entry && entry.status !== "pending") {
-      return undefined;
-    }
-    return entry;
+    return this.map.get(groupId);
   }
 
   getById(id: string): PendingJoinRequest | undefined {
     this.pruneExpired();
     for (const entry of this.map.values()) {
       if (entry.id === id) {
-        return entry.status === "pending" ? entry : undefined;
+        return entry;
       }
     }
     return undefined;
@@ -78,13 +90,7 @@ class PendingJoinMapImpl implements PendingJoinMap {
 
   listPending(): PendingJoinRequest[] {
     this.pruneExpired();
-    const result: PendingJoinRequest[] = [];
-    for (const entry of this.map.values()) {
-      if (entry.status === "pending") {
-        result.push(entry);
-      }
-    }
-    return result;
+    return [...this.map.values()];
   }
 
   pruneExpired(): number {
@@ -92,7 +98,6 @@ class PendingJoinMapImpl implements PendingJoinMap {
     const now = Date.now();
     for (const [groupId, entry] of this.map.entries()) {
       if (new Date(entry.expires_at).getTime() <= now) {
-        entry.status = "expired";
         this.map.delete(groupId);
         count++;
       }
