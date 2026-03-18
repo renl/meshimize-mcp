@@ -12,6 +12,7 @@ export async function searchGroupsHandler(
   deps: ToolDependencies,
 ) {
   const lookupKey = normalizeAuthorityLookupKey({ query: args.query, type: args.type });
+  const normalizedQuery = lookupKey.query_text === "" ? undefined : lookupKey.query_text;
 
   deps.workflowRecorder.record("authority_lookup_started", {
     query_text: lookupKey.query_text,
@@ -39,7 +40,7 @@ export async function searchGroupsHandler(
 
   const [searchResult, myGroupsResult] = await Promise.all([
     deps.api.searchGroups({
-      q: args.query,
+      q: normalizedQuery,
       type: args.type,
       limit: args.limit,
     }),

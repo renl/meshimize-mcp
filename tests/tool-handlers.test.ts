@@ -122,10 +122,29 @@ describe("tool handlers", () => {
       is_member: true,
       my_role: "member",
     });
-    expect(deps.api.searchGroups).toHaveBeenCalledWith({ q: " Test ", type: "qa", limit: 50 });
+    expect(deps.api.searchGroups).toHaveBeenCalledWith({ q: "test", type: "qa", limit: 50 });
     expect(deps.api.getMyGroups).toHaveBeenCalledWith({ limit: 100 });
     expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_lookup_started", {
       query_text: "test",
+      type_filter: "qa",
+    });
+  });
+
+  it("search_groups omits q when the normalized query is empty", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+
+    await searchGroupsHandler({ query: "   ", type: "qa", limit: 25 }, deps);
+
+    expect(deps.api.searchGroups).toHaveBeenCalledWith({ q: undefined, type: "qa", limit: 25 });
+    expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_lookup_started", {
+      query_text: "",
       type_filter: "qa",
     });
   });
