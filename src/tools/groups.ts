@@ -105,24 +105,21 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
     };
   }
 
-  const [groupsResult, myGroupsResult] = await Promise.all([
-    deps.api.searchGroups({ limit: 100 }),
-    findMyGroupById(deps.api, args.group_id).catch(() => null),
-  ]);
-  const group = groupsResult.data.find((g) => g.id === args.group_id);
-  if (!group) {
-    throw new Error("Group not found or is not public.");
-  }
-
-  const membership = myGroupsResult;
+  const membership = await findMyGroupById(deps.api, args.group_id).catch(() => null);
   if (membership) {
     const resolvedRole = membership.my_role ?? "member";
     return {
       status: "already_member",
-      group_id: group.id,
+      group_id: membership.id,
       role: resolvedRole,
-      message: `You are already a ${resolvedRole} of group "${group.name}".`,
+      message: `You are already a ${resolvedRole} of group "${membership.name}".`,
     };
+  }
+
+  const groupsResult = await deps.api.searchGroups({ limit: 100 });
+  const group = groupsResult.data.find((g) => g.id === args.group_id);
+  if (!group) {
+    throw new Error("Group not found or is not public.");
   }
 
   const pending = deps.pendingJoins.add({

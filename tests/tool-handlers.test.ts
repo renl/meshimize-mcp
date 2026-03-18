@@ -279,6 +279,27 @@ describe("tool handlers", () => {
     expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeUndefined();
   });
 
+  it("join_group returns already_member when the group is absent from discovery results but present in memberships", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [],
+      meta: { has_more: false, next_cursor: null, count: 0 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [{ ...mockGroup, my_role: "member" }],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+
+    const result = await joinGroupHandler({ group_id: mockGroup.id }, deps);
+
+    expect(result).toEqual({
+      status: "already_member",
+      group_id: mockGroup.id,
+      role: "member",
+      message: `You are already a member of group "${mockGroup.name}".`,
+    });
+    expect(deps.api.searchGroups).not.toHaveBeenCalled();
+  });
+
   it("approve_join returns canonical result and marks the next ask as post_approval_first_ask", async () => {
     (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: [mockGroup],
