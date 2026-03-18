@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
+import { findMyGroupById } from "./my-groups.js";
 import type {
   AskQuestionAnsweredResult,
   AskQuestionTimeoutResult,
@@ -95,8 +96,7 @@ export async function askQuestionHandler(
   args: { group_id: string; question: string; timeout_seconds?: number },
   deps: ToolDependencies,
 ) {
-  const membershipsResult = await deps.api.getMyGroups({ limit: 100 });
-  const group = membershipsResult.data.find((membership) => membership.id === args.group_id);
+  const group = await findMyGroupById(deps.api, args.group_id);
 
   if (!group) {
     throw new Error(

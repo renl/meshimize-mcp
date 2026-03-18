@@ -92,6 +92,37 @@ const mockGroup = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
+function createMembershipGroup(id: string, overrides: Partial<typeof mockGroup> = {}) {
+  return {
+    ...mockGroup,
+    ...overrides,
+    id,
+  };
+}
+
+function createPaginatedMyGroupsMock(
+  pages: Array<{ data: Array<typeof mockGroup>; next_cursor?: string | null }>,
+) {
+  return ({ after }: { after?: string } = {}) => {
+    const pageIndex =
+      after === undefined ? 0 : pages.findIndex((page) => page.next_cursor === after) + 1;
+    const page = pages[pageIndex];
+
+    if (!page) {
+      throw new Error(`Unexpected pagination cursor: ${after ?? "<initial>"}`);
+    }
+
+    return Promise.resolve({
+      data: page.data,
+      meta: {
+        has_more: page.next_cursor != null,
+        next_cursor: page.next_cursor ?? null,
+        count: page.data.length,
+      },
+    });
+  };
+}
+
 describe("tool handlers", () => {
   let deps: ToolDependencies;
 
@@ -214,6 +245,38 @@ describe("tool handlers", () => {
       group_name: mockGroup.name,
       group_type: mockGroup.type,
     });
+  });
+
+  it("join_group resolves existing membership beyond the first getMyGroups page", async () => {
+    (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [mockGroup],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockImplementation(
+      createPaginatedMyGroupsMock([
+        {
+          data: Array.from({ length: 100 }, (_, index) =>
+            createMembershipGroup(`page-1-group-${index + 1}`),
+          ),
+          next_cursor: "cursor-2",
+        },
+        {
+          data: [createMembershipGroup(mockGroup.id, { my_role: "member" })],
+        },
+      ]),
+    );
+
+    const result = await joinGroupHandler({ group_id: mockGroup.id }, deps);
+
+    expect(result).toEqual({
+      status: "already_member",
+      group_id: mockGroup.id,
+      role: "member",
+      message: `You are already a member of group "${mockGroup.name}".`,
+    });
+    expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(1, { limit: 100, after: undefined });
+    expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(2, { limit: 100, after: "cursor-2" });
+    expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeUndefined();
   });
 
   it("approve_join returns canonical result and marks the next ask as post_approval_first_ask", async () => {
@@ -391,6 +454,73 @@ describe("tool handlers", () => {
     await expect(
       askQuestionHandler({ group_id: mockGroup.id, question: "What is X?" }, deps),
     ).rejects.toThrow("only valid for Q&A groups");
+  });
+
+  it("ask_question resolves membership beyond the first getMyGroups page", async () => {
+    vi.useFakeTimers();
+    try {
+      (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockImplementation(
+        createPaginatedMyGroupsMock([
+          {
+            data: Array.from({ length: 100 }, (_, index) =>
+              createMembershipGroup(`page-1-group-${index + 1}`),
+            ),
+            next_cursor: "cursor-2",
+          },
+          {
+            data: [createMembershipGroup(mockGroup.id, { my_role: "member" })],
+          },
+        ]),
+      );
+      (deps.api.postMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          id: "12121212-1212-1212-1212-121212121212",
+          group_id: mockGroup.id,
+          content: "What is beyond page one?",
+          message_type: "question",
+          parent_message_id: null,
+          sender: { id: "asker", display_name: "Asker", verified: false },
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([
+        {
+          id: "34343434-3434-3434-3434-343434343434",
+          group_id: mockGroup.id,
+          content: "Found on page two",
+          message_type: "answer",
+          parent_message_id: "12121212-1212-1212-1212-121212121212",
+          sender: { id: "responder", display_name: "Responder", verified: true },
+          created_at: "2026-01-01T00:00:01Z",
+        },
+      ]);
+
+      const result = await askQuestionHandler(
+        { group_id: mockGroup.id, question: "What is beyond page one?", timeout_seconds: 5 },
+        deps,
+      );
+
+      expect(result).toMatchObject({
+        answered: true,
+        question_id: "12121212-1212-1212-1212-121212121212",
+        group_id: mockGroup.id,
+        provenance: {
+          membership_path: "existing_membership",
+          group_id: mockGroup.id,
+        },
+        answer: {
+          id: "34343434-3434-3434-3434-343434343434",
+          content: "Found on page two",
+        },
+      });
+      expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(1, { limit: 100, after: undefined });
+      expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(2, {
+        limit: 100,
+        after: "cursor-2",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ask_question returns canonical success with existing_membership provenance", async () => {

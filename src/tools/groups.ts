@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
+import { findMyGroupById } from "./my-groups.js";
 import { normalizeAuthorityLookupKey } from "../state/authority-lookups.js";
 import type { ApproveJoinResult } from "../types/workflow.js";
 
@@ -106,14 +107,14 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
 
   const [groupsResult, myGroupsResult] = await Promise.all([
     deps.api.searchGroups({ limit: 100 }),
-    deps.api.getMyGroups({ limit: 100 }).catch(() => null),
+    findMyGroupById(deps.api, args.group_id).catch(() => null),
   ]);
   const group = groupsResult.data.find((g) => g.id === args.group_id);
   if (!group) {
     throw new Error("Group not found or is not public.");
   }
 
-  const membership = myGroupsResult?.data.find((candidate) => candidate.id === args.group_id);
+  const membership = myGroupsResult;
   if (membership) {
     const resolvedRole = membership.my_role ?? "member";
     return {
