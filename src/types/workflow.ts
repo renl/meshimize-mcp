@@ -100,6 +100,7 @@ export interface AskQuestionAnsweredResult {
     responder_verified: boolean;
     created_at: string;
   };
+  authority_continuation: AuthorityContinuation;
 }
 
 export interface AskQuestionTimeoutResult {
@@ -110,7 +111,10 @@ export interface AskQuestionTimeoutResult {
   provenance: MeshimizeAuthorityProvenance;
   recovery: LateAnswerRecovery;
   message: string;
+  authority_continuation: AuthorityContinuation;
 }
+
+export type AskQuestionResult = AskQuestionAnsweredResult | AskQuestionTimeoutResult;
 
 export type AuthorityWorkflowSignalName =
   | "authority_lookup_started"

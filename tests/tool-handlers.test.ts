@@ -26,6 +26,7 @@ import { createAuthorityLookupMap } from "../src/state/authority-lookups.js";
 import { createAuthoritySessionContextStore } from "../src/state/authority-session-context.js";
 import { createMembershipPathMap } from "../src/state/membership-paths.js";
 import { createPendingJoinMap } from "../src/state/pending-joins.js";
+import type { AskQuestionAnsweredResult, AskQuestionTimeoutResult } from "../src/types/workflow.js";
 import type { PhoenixSocket } from "../src/ws/client.js";
 
 function createTestConfig(): Config {
@@ -735,6 +736,19 @@ describe("tool handlers", () => {
           expires_at: null,
         },
       });
+
+      if (result.answered) {
+        const typedResult: AskQuestionAnsweredResult = result;
+
+        expect(typedResult.authority_continuation).toMatchObject({
+          state: "completed",
+          scope: "group",
+          group_id: mockGroup.id,
+          membership_path: "existing_membership",
+          question_id: "66666666-6666-6666-6666-666666666666",
+          next_tool: null,
+        });
+      }
     } finally {
       vi.useRealTimers();
     }
@@ -802,6 +816,32 @@ describe("tool handlers", () => {
     }
   });
 
+  it("ask_question preserves post-approval retry context when postMessage fails", async () => {
+    deps.membershipPaths.markPostApprovalFirstAsk(mockGroup.id);
+    deps.authoritySessionContext.recordReadyToAsk(mockGroup.id, "post_approval_first_ask");
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [{ ...mockGroup, my_role: "member" }],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.postMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("post failed"));
+
+    await expect(
+      askQuestionHandler({ group_id: mockGroup.id, question: "Retry me" }, deps),
+    ).rejects.toThrow("post failed");
+
+    expect(deps.membershipPaths.resolve(mockGroup.id)).toBe("post_approval_first_ask");
+    expect(deps.authoritySessionContext.getGroupContext(mockGroup.id)).toMatchObject({
+      state: "ready_to_ask",
+      group_id: mockGroup.id,
+      membership_path: "post_approval_first_ask",
+      question_id: null,
+    });
+    expect(deps.workflowRecorder.record).not.toHaveBeenCalledWith(
+      "authority_first_ask_after_approval",
+      expect.anything(),
+    );
+  });
+
   it("ask_question returns canonical recoverable timeout metadata and emits timeout metric", async () => {
     vi.useFakeTimers();
     try {
@@ -831,6 +871,8 @@ describe("tool handlers", () => {
 
       expect(result.answered).toBe(false);
       if (!result.answered) {
+        const typedResult: AskQuestionTimeoutResult = result;
+
         expect(result).toMatchObject({
           question_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
           group_id: mockGroup.id,
@@ -857,7 +899,15 @@ describe("tool handlers", () => {
             next_tool: "get_messages",
           },
         });
-        expect(result.recovery.instructions).toContain("get_messages");
+        expect(typedResult.recovery.instructions).toContain("get_messages");
+        expect(typedResult.authority_continuation).toMatchObject({
+          state: "timed_out_waiting_for_answer",
+          scope: "group",
+          group_id: mockGroup.id,
+          membership_path: "existing_membership",
+          question_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          next_tool: "get_messages",
+        });
       }
       expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_ask_timed_out", {
         group_id: mockGroup.id,

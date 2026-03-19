@@ -3,7 +3,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
 import { findMyGroupById } from "./my-groups.js";
 import { toAuthorityContinuation } from "../state/authority-session-context.js";
-import type { LateAnswerRecovery, MeshimizeAuthorityProvenance } from "../types/workflow.js";
+import type {
+  AskQuestionAnsweredResult,
+  AskQuestionTimeoutResult,
+  LateAnswerRecovery,
+  MeshimizeAuthorityProvenance,
+} from "../types/workflow.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -93,7 +98,7 @@ export async function postMessageHandler(
 export async function askQuestionHandler(
   args: { group_id: string; question: string; timeout_seconds?: number },
   deps: ToolDependencies,
-) {
+): Promise<AskQuestionAnsweredResult | AskQuestionTimeoutResult> {
   const group = await findMyGroupById(deps.api, args.group_id);
 
   if (!group) {
@@ -107,22 +112,25 @@ export async function askQuestionHandler(
   }
 
   const timeoutSeconds = args.timeout_seconds ?? 90;
-  const membershipPath = deps.membershipPaths.consume(args.group_id);
-  deps.authoritySessionContext.clearGroup(args.group_id);
+  const membershipPath = deps.membershipPaths.resolve(args.group_id);
   const provenance = buildProvenance(group, membershipPath);
-
-  if (membershipPath === "post_approval_first_ask") {
-    deps.workflowRecorder.record("authority_first_ask_after_approval", {
-      group_id: args.group_id,
-      group_name: group.name,
-    });
-  }
 
   const questionResult = await deps.api.postMessage(args.group_id, {
     content: args.question,
     message_type: "question",
     parent_message_id: null,
   });
+
+  if (membershipPath === "post_approval_first_ask") {
+    deps.membershipPaths.consume(args.group_id);
+    deps.workflowRecorder.record("authority_first_ask_after_approval", {
+      group_id: args.group_id,
+      group_name: group.name,
+    });
+  }
+
+  deps.authoritySessionContext.clearGroup(args.group_id);
+
   const questionId = questionResult.data.id;
 
   const timeoutMs = timeoutSeconds * 1000;
@@ -141,7 +149,7 @@ export async function askQuestionHandler(
         questionId,
       );
 
-      const result = {
+      const result: AskQuestionAnsweredResult = {
         answered: true,
         question_id: questionId,
         group_id: args.group_id,
@@ -176,7 +184,7 @@ export async function askQuestionHandler(
     questionId,
   );
 
-  const result = {
+  const result: AskQuestionTimeoutResult = {
     answered: false,
     question_id: questionId,
     group_id: args.group_id,
