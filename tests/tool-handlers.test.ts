@@ -23,8 +23,10 @@ import type { MeshimizeAPI } from "../src/api/client.js";
 import type { MessageBuffer } from "../src/buffer/message-buffer.js";
 import type { Config } from "../src/config.js";
 import { createAuthorityLookupMap } from "../src/state/authority-lookups.js";
+import { createAuthoritySessionContextStore } from "../src/state/authority-session-context.js";
 import { createMembershipPathMap } from "../src/state/membership-paths.js";
 import { createPendingJoinMap } from "../src/state/pending-joins.js";
+import type { AskQuestionAnsweredResult, AskQuestionTimeoutResult } from "../src/types/workflow.js";
 import type { PhoenixSocket } from "../src/ws/client.js";
 
 function createTestConfig(): Config {
@@ -48,6 +50,8 @@ function createRecorder() {
 }
 
 function createMockDeps(): ToolDependencies {
+  const authoritySessionContext = createAuthoritySessionContextStore();
+
   return {
     api: {
       searchGroups: vi.fn(),
@@ -68,9 +72,13 @@ function createMockDeps(): ToolDependencies {
       getDirectMessages: vi.fn(),
       clearGroup: vi.fn(),
     } as unknown as MessageBuffer,
-    pendingJoins: createPendingJoinMap(createTestConfig()),
+    pendingJoins: createPendingJoinMap(createTestConfig(), {
+      onExpired: (request) => authoritySessionContext.clearGroup(request.group_id),
+      onRemoved: (request) => authoritySessionContext.clearGroup(request.group_id),
+    }),
     authorityLookups: createAuthorityLookupMap(),
     membershipPaths: createMembershipPathMap(),
+    authoritySessionContext,
     workflowRecorder: createRecorder(),
   };
 }
@@ -133,6 +141,7 @@ describe("tool handlers", () => {
   afterEach(() => {
     deps.pendingJoins.dispose();
     deps.authorityLookups.dispose();
+    deps.authoritySessionContext.clearAll();
   });
 
   it("search_groups enriches discovery results with membership state and records lookup start", async () => {
@@ -158,6 +167,19 @@ describe("tool handlers", () => {
     expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_lookup_started", {
       query_text: "test",
       type_filter: "qa",
+    });
+    expect(result.authority_continuation).toMatchObject({
+      state: "search_results_available",
+      scope: "lookup",
+      lookup_key: {
+        query_text: "test",
+        type_filter: "qa",
+      },
+      group_id: null,
+      pending_join_id: null,
+      membership_path: null,
+      question_id: null,
+      next_tool: null,
     });
   });
 
@@ -197,6 +219,19 @@ describe("tool handlers", () => {
     expect(second).toMatchObject({
       groups: [],
       suppressed_repeat_lookup: true,
+      authority_continuation: {
+        state: "no_relevant_group_found",
+        scope: "lookup",
+        lookup_key: {
+          query_text: "unknown",
+          type_filter: "qa",
+        },
+        group_id: null,
+        pending_join_id: null,
+        membership_path: null,
+        question_id: null,
+        next_tool: null,
+      },
     });
     expect(deps.api.searchGroups).toHaveBeenCalledTimes(1);
     expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_lookup_zero_results", {
@@ -240,6 +275,16 @@ describe("tool handlers", () => {
     expect(result.status).toBe("pending_operator_approval");
     expect(deps.api.joinGroup).not.toHaveBeenCalled();
     expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeDefined();
+    expect(result.authority_continuation).toMatchObject({
+      state: "join_approval_pending",
+      scope: "group",
+      lookup_key: null,
+      group_id: mockGroup.id,
+      membership_path: null,
+      question_id: null,
+      next_tool: "approve_join",
+    });
+    expect(result.authority_continuation.pending_join_id).toBe(result.pending_request_id);
     expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_join_pending", {
       group_id: mockGroup.id,
       group_name: mockGroup.name,
@@ -328,6 +373,12 @@ describe("tool handlers", () => {
     expect(first.status).toBe("pending_operator_approval");
     expect(second.status).toBe("already_pending");
     expect(first.group).toEqual(second.group);
+    expect(second.authority_continuation).toMatchObject({
+      state: "join_approval_pending",
+      scope: "group",
+      group_id: mockGroup.id,
+      next_tool: "approve_join",
+    });
     expect(first.group).toEqual({
       id: mockGroup.id,
       name: mockGroup.name,
@@ -365,6 +416,16 @@ describe("tool handlers", () => {
       joined: true,
       membership_path_ready: "post_approval_first_ask",
       role: "member",
+      authority_continuation: expect.objectContaining({
+        state: "ready_to_ask",
+        scope: "group",
+        lookup_key: null,
+        group_id: mockGroup.id,
+        pending_join_id: null,
+        membership_path: "post_approval_first_ask",
+        question_id: null,
+        next_tool: "ask_question",
+      }),
     });
     expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeUndefined();
     expect(deps.membershipPaths.resolve(mockGroup.id)).toBe("post_approval_first_ask");
@@ -390,6 +451,7 @@ describe("tool handlers", () => {
     expect(result.status).toBe("rejected");
     expect(deps.pendingJoins.getByGroupId(mockGroup.id)).toBeUndefined();
     expect(deps.membershipPaths.resolve(mockGroup.id)).toBe("existing_membership");
+    expect(result).not.toHaveProperty("authority_continuation");
   });
 
   it("list_pending_joins returns canonical pending entries", async () => {
@@ -413,6 +475,7 @@ describe("tool handlers", () => {
       owner_name: mockGroup.owner.display_name,
       owner_verified: true,
     });
+    expect(result).not.toHaveProperty("authority_continuation");
   });
 
   it("leave_group clears the message buffer and membership-path state", async () => {
@@ -571,6 +634,17 @@ describe("tool handlers", () => {
           id: "34343434-3434-3434-3434-343434343434",
           content: "Found on page two",
         },
+        authority_continuation: {
+          state: "completed",
+          scope: "group",
+          lookup_key: null,
+          group_id: mockGroup.id,
+          pending_join_id: null,
+          membership_path: "existing_membership",
+          question_id: "12121212-1212-1212-1212-121212121212",
+          next_tool: null,
+          expires_at: null,
+        },
       });
       expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(1, { limit: 100, after: undefined });
       expect(deps.api.getMyGroups).toHaveBeenNthCalledWith(2, {
@@ -650,7 +724,31 @@ describe("tool handlers", () => {
           responder_verified: true,
           created_at: "2026-01-01T00:00:01Z",
         },
+        authority_continuation: {
+          state: "completed",
+          scope: "group",
+          lookup_key: null,
+          group_id: mockGroup.id,
+          pending_join_id: null,
+          membership_path: "existing_membership",
+          question_id: "66666666-6666-6666-6666-666666666666",
+          next_tool: null,
+          expires_at: null,
+        },
       });
+
+      if (result.answered) {
+        const typedResult: AskQuestionAnsweredResult = result;
+
+        expect(typedResult.authority_continuation).toMatchObject({
+          state: "completed",
+          scope: "group",
+          group_id: mockGroup.id,
+          membership_path: "existing_membership",
+          question_id: "66666666-6666-6666-6666-666666666666",
+          next_tool: null,
+        });
+      }
     } finally {
       vi.useRealTimers();
     }
@@ -695,6 +793,15 @@ describe("tool handlers", () => {
       expect(result.answered).toBe(true);
       if (result.answered) {
         expect(result.provenance.membership_path).toBe("post_approval_first_ask");
+        expect(result.authority_continuation).toMatchObject({
+          state: "completed",
+          scope: "group",
+          group_id: mockGroup.id,
+          membership_path: "post_approval_first_ask",
+          question_id: "88888888-8888-8888-8888-888888888888",
+          next_tool: null,
+          expires_at: null,
+        });
       }
       expect(deps.membershipPaths.resolve(mockGroup.id)).toBe("existing_membership");
       expect(deps.workflowRecorder.record).toHaveBeenCalledWith(
@@ -707,6 +814,32 @@ describe("tool handlers", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("ask_question preserves post-approval retry context when postMessage fails", async () => {
+    deps.membershipPaths.markPostApprovalFirstAsk(mockGroup.id);
+    deps.authoritySessionContext.recordReadyToAsk(mockGroup.id, "post_approval_first_ask");
+    (deps.api.getMyGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: [{ ...mockGroup, my_role: "member" }],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+    (deps.api.postMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("post failed"));
+
+    await expect(
+      askQuestionHandler({ group_id: mockGroup.id, question: "Retry me" }, deps),
+    ).rejects.toThrow("post failed");
+
+    expect(deps.membershipPaths.resolve(mockGroup.id)).toBe("post_approval_first_ask");
+    expect(deps.authoritySessionContext.getGroupContext(mockGroup.id)).toMatchObject({
+      state: "ready_to_ask",
+      group_id: mockGroup.id,
+      membership_path: "post_approval_first_ask",
+      question_id: null,
+    });
+    expect(deps.workflowRecorder.record).not.toHaveBeenCalledWith(
+      "authority_first_ask_after_approval",
+      expect.anything(),
+    );
   });
 
   it("ask_question returns canonical recoverable timeout metadata and emits timeout metric", async () => {
@@ -738,6 +871,8 @@ describe("tool handlers", () => {
 
       expect(result.answered).toBe(false);
       if (!result.answered) {
+        const typedResult: AskQuestionTimeoutResult = result;
+
         expect(result).toMatchObject({
           question_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
           group_id: mockGroup.id,
@@ -753,8 +888,26 @@ describe("tool handlers", () => {
             after_message_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
             match_parent_message_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
           },
+          authority_continuation: {
+            state: "timed_out_waiting_for_answer",
+            scope: "group",
+            lookup_key: null,
+            group_id: mockGroup.id,
+            pending_join_id: null,
+            membership_path: "existing_membership",
+            question_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            next_tool: "get_messages",
+          },
         });
-        expect(result.recovery.instructions).toContain("get_messages");
+        expect(typedResult.recovery.instructions).toContain("get_messages");
+        expect(typedResult.authority_continuation).toMatchObject({
+          state: "timed_out_waiting_for_answer",
+          scope: "group",
+          group_id: mockGroup.id,
+          membership_path: "existing_membership",
+          question_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          next_tool: "get_messages",
+        });
       }
       expect(deps.workflowRecorder.record).toHaveBeenCalledWith("authority_ask_timed_out", {
         group_id: mockGroup.id,
@@ -764,6 +917,32 @@ describe("tool handlers", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("get_messages clears timed_out_waiting_for_answer after observing a matching late answer", async () => {
+    deps.authoritySessionContext.recordTimedOutWaitingForAnswer(
+      mockGroup.id,
+      "existing_membership",
+      "late-question-id",
+    );
+    (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([
+      {
+        id: "late-answer-id",
+        group_id: mockGroup.id,
+        content: "Late answer",
+        message_type: "answer",
+        parent_message_id: "late-question-id",
+        sender: { id: "responder", display_name: "Responder", verified: true },
+        created_at: "2026-01-01T00:00:02Z",
+      },
+    ]);
+
+    await getMessagesHandler(
+      { group_id: mockGroup.id, after_message_id: "late-question-id", limit: 50 },
+      deps,
+    );
+
+    expect(deps.authoritySessionContext.getGroupContext(mockGroup.id)).toBeUndefined();
   });
 
   it("get_pending_questions filters to QA owner/responder groups", async () => {

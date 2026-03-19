@@ -14,6 +14,7 @@ import { MeshimizeAPI } from "./api/client.js";
 import { PhoenixSocket } from "./ws/client.js";
 import { MessageBuffer } from "./buffer/message-buffer.js";
 import { createAuthorityLookupMap } from "./state/authority-lookups.js";
+import { createAuthoritySessionContextStore } from "./state/authority-session-context.js";
 import { createMembershipPathMap } from "./state/membership-paths.js";
 import { createPendingJoinMap } from "./state/pending-joins.js";
 import { noopWorkflowSupportRecorder } from "./types/workflow.js";
@@ -34,8 +35,12 @@ async function main(): Promise<void> {
     maxReconnectAttempts: config.maxReconnectAttempts,
   });
   const buffer = new MessageBuffer(config.bufferSize);
-  const pendingJoins = createPendingJoinMap(config);
   const authorityLookups = createAuthorityLookupMap();
+  const authoritySessionContext = createAuthoritySessionContextStore();
+  const pendingJoins = createPendingJoinMap(config, {
+    onExpired: (request) => authoritySessionContext.clearGroup(request.group_id),
+    onRemoved: (request) => authoritySessionContext.clearGroup(request.group_id),
+  });
   const membershipPaths = createMembershipPathMap();
 
   // 3. Run startup orchestration (authenticate, connect WS, join channels)
@@ -50,6 +55,7 @@ async function main(): Promise<void> {
     pendingJoins,
     authorityLookups,
     membershipPaths,
+    authoritySessionContext,
     workflowRecorder: noopWorkflowSupportRecorder,
   });
 

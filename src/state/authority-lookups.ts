@@ -4,7 +4,7 @@ import type {
   AuthorityLookupRecord,
 } from "../types/workflow.js";
 
-const DEFAULT_AUTHORITY_LOOKUP_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_AUTHORITY_LOOKUP_TTL_MS = 15 * 60 * 1000;
 
 export interface AuthorityLookupMap {
   get(lookupKey: AuthorityLookupKey): AuthorityLookupRecord | undefined;

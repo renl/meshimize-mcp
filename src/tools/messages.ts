@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
 import { findMyGroupById } from "./my-groups.js";
+import { toAuthorityContinuation } from "../state/authority-session-context.js";
 import type {
   AskQuestionAnsweredResult,
   AskQuestionTimeoutResult,
@@ -59,6 +60,7 @@ export async function getMessagesHandler(
   });
 
   if (buffered.length > 0) {
+    deps.authoritySessionContext.clearTimedOutIfRecovered(args.group_id, buffered);
     return { messages: buffered, source: "buffer" as const, has_more: false };
   }
 
@@ -66,6 +68,7 @@ export async function getMessagesHandler(
     after: args.after_message_id,
     limit: args.limit,
   });
+  deps.authoritySessionContext.clearTimedOutIfRecovered(args.group_id, result.data);
   return { messages: result.data, source: "api" as const, has_more: result.meta.has_more };
 }
 
@@ -95,7 +98,7 @@ export async function postMessageHandler(
 export async function askQuestionHandler(
   args: { group_id: string; question: string; timeout_seconds?: number },
   deps: ToolDependencies,
-) {
+): Promise<AskQuestionAnsweredResult | AskQuestionTimeoutResult> {
   const group = await findMyGroupById(deps.api, args.group_id);
 
   if (!group) {
@@ -112,18 +115,22 @@ export async function askQuestionHandler(
   const membershipPath = deps.membershipPaths.resolve(args.group_id);
   const provenance = buildProvenance(group, membershipPath);
 
+  const questionResult = await deps.api.postMessage(args.group_id, {
+    content: args.question,
+    message_type: "question",
+    parent_message_id: null,
+  });
+
   if (membershipPath === "post_approval_first_ask") {
+    deps.membershipPaths.consume(args.group_id);
     deps.workflowRecorder.record("authority_first_ask_after_approval", {
       group_id: args.group_id,
       group_name: group.name,
     });
   }
 
-  const questionResult = await deps.api.postMessage(args.group_id, {
-    content: args.question,
-    message_type: "question",
-    parent_message_id: null,
-  });
+  deps.authoritySessionContext.clearGroup(args.group_id);
+
   const questionId = questionResult.data.id;
 
   const timeoutMs = timeoutSeconds * 1000;
@@ -136,6 +143,12 @@ export async function askQuestionHandler(
     });
     const answer = messages.find((m) => m.message_type === "answer");
     if (answer) {
+      const authorityContext = deps.authoritySessionContext.buildCompleted(
+        args.group_id,
+        membershipPath,
+        questionId,
+      );
+
       const result: AskQuestionAnsweredResult = {
         answered: true,
         question_id: questionId,
@@ -150,9 +163,9 @@ export async function askQuestionHandler(
           responder_verified: answer.sender.verified,
           created_at: answer.created_at,
         },
+        authority_continuation: toAuthorityContinuation(authorityContext),
       };
 
-      deps.membershipPaths.consume(args.group_id);
       return result;
     }
 
@@ -165,6 +178,12 @@ export async function askQuestionHandler(
     membership_path: membershipPath,
   });
 
+  const authorityContext = deps.authoritySessionContext.recordTimedOutWaitingForAnswer(
+    args.group_id,
+    membershipPath,
+    questionId,
+  );
+
   const result: AskQuestionTimeoutResult = {
     answered: false,
     question_id: questionId,
@@ -175,9 +194,9 @@ export async function askQuestionHandler(
     message:
       `No answer received within ${timeoutSeconds}s. The question was posted successfully and the provider may still be processing. ` +
       "Use the recovery instructions to retrieve a late answer without re-asking.",
+    authority_continuation: toAuthorityContinuation(authorityContext),
   };
 
-  deps.membershipPaths.consume(args.group_id);
   return result;
 }
 

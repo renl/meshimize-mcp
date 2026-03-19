@@ -3,6 +3,7 @@ import { MeshimizeAPI } from "../src/api/client.js";
 import { MessageBuffer } from "../src/buffer/message-buffer.js";
 import { loadConfig } from "../src/config.js";
 import { createAuthorityLookupMap } from "../src/state/authority-lookups.js";
+import { createAuthoritySessionContextStore } from "../src/state/authority-session-context.js";
 import { createMembershipPathMap } from "../src/state/membership-paths.js";
 import { createPendingJoinMap } from "../src/state/pending-joins.js";
 import { askQuestionHandler } from "../src/tools/messages.js";
@@ -41,8 +42,12 @@ describeIntegration("Integration Tests", () => {
     buffer: MessageBuffer,
   ): ToolDependencies {
     const config = loadConfig();
-    const pendingJoins = createPendingJoinMap(config);
     const authorityLookups = createAuthorityLookupMap();
+    const authoritySessionContext = createAuthoritySessionContextStore();
+    const pendingJoins = createPendingJoinMap(config, {
+      onExpired: (request) => authoritySessionContext.clearGroup(request.group_id),
+      onRemoved: (request) => authoritySessionContext.clearGroup(request.group_id),
+    });
     pendingJoinMaps.push(pendingJoins);
     authorityLookupMaps.push(authorityLookups);
 
@@ -53,6 +58,7 @@ describeIntegration("Integration Tests", () => {
       pendingJoins,
       authorityLookups,
       membershipPaths: createMembershipPathMap(),
+      authoritySessionContext,
       workflowRecorder: { record: () => {} },
     };
   }
@@ -117,9 +123,14 @@ describeIntegration("Integration Tests", () => {
     const result = await searchGroupsHandler({ limit: 10 }, deps);
 
     expect(Array.isArray(result.groups)).toBe(true);
+    expect(result.authority_continuation).toBeDefined();
+    expect(result.authority_continuation.scope).toBe("lookup");
     if (result.groups.length > 0) {
       expect(result.groups[0]).toHaveProperty("is_member");
       expect(result.groups[0]).toHaveProperty("my_role");
+      expect(result.authority_continuation.state).toBe("search_results_available");
+    } else {
+      expect(result.authority_continuation.state).toBe("no_relevant_group_found");
     }
   }, 20000);
 
@@ -166,10 +177,24 @@ describeIntegration("Integration Tests", () => {
     if (result.answered) {
       expect(result.answer.content.length).toBeGreaterThan(0);
       expect(result.answer.responder_account_id).toBeDefined();
+      expect(result.authority_continuation).toMatchObject({
+        state: "completed",
+        scope: "group",
+        group_id: groupId,
+        question_id: result.question_id,
+        expires_at: null,
+      });
     } else {
       expect(result.recovery.retrieval_tool).toBe("get_messages");
       expect(result.recovery.after_message_id).toBe(result.question_id);
       expect(result.recovery.match_parent_message_id).toBe(result.question_id);
+      expect(result.authority_continuation).toMatchObject({
+        state: "timed_out_waiting_for_answer",
+        scope: "group",
+        group_id: groupId,
+        question_id: result.question_id,
+        next_tool: "get_messages",
+      });
     }
   }, 30000);
 });

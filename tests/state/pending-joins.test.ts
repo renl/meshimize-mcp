@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createPendingJoinMap } from "../../src/state/pending-joins.js";
+import { createAuthoritySessionContextStore } from "../../src/state/authority-session-context.js";
 import type { PendingJoinMap } from "../../src/state/pending-joins.js";
 import type { Config } from "../../src/config.js";
 import { loadConfig } from "../../src/config.js";
@@ -107,6 +108,24 @@ describe("PendingJoinMap", () => {
       vi.advanceTimersByTime(1001);
 
       expect(map.getByGroupId("g-ttl")).toBeUndefined();
+    });
+
+    it("expired requests can clear join_approval_pending authority context through callbacks", () => {
+      const authoritySessionContext = createAuthoritySessionContextStore();
+      map = createPendingJoinMap(makeConfig({ joinTimeoutMs: 1000 }), {
+        onExpired: (request) => authoritySessionContext.clearGroup(request.group_id),
+      });
+      const request = map.add(makeGroup("g-ttl-context"));
+      authoritySessionContext.recordJoinApprovalPending(
+        request.group_id,
+        request.id,
+        request.expires_at,
+      );
+
+      vi.advanceTimersByTime(1001);
+
+      expect(map.getByGroupId("g-ttl-context")).toBeUndefined();
+      expect(authoritySessionContext.getGroupContext("g-ttl-context")).toBeUndefined();
     });
   });
 

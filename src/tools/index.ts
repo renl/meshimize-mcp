@@ -5,6 +5,7 @@ import type { MessageBuffer } from "../buffer/message-buffer.js";
 import type { PendingJoinMap } from "../state/pending-joins.js";
 import type { AuthorityLookupMap } from "../state/authority-lookups.js";
 import type { MembershipPathMap } from "../state/membership-paths.js";
+import type { AuthoritySessionContextStore } from "../state/authority-session-context.js";
 import type { WorkflowSupportRecorder } from "../types/workflow.js";
 
 import {
@@ -31,6 +32,7 @@ export interface ToolDependencies {
   pendingJoins: PendingJoinMap;
   authorityLookups: AuthorityLookupMap;
   membershipPaths: MembershipPathMap;
+  authoritySessionContext: AuthoritySessionContextStore;
   workflowRecorder: WorkflowSupportRecorder;
 }
 

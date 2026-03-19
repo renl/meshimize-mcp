@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
 import { findMyGroupById } from "./my-groups.js";
 import { normalizeAuthorityLookupKey } from "../state/authority-lookups.js";
+import { toAuthorityContinuation } from "../state/authority-session-context.js";
 import type { ApproveJoinResult } from "../types/workflow.js";
 
 function buildPendingJoinGroup(group: {
@@ -40,6 +41,12 @@ export async function searchGroupsHandler(
 
   const priorLookup = deps.authorityLookups.get(lookupKey);
   if (priorLookup?.decision === "no_relevant_group_found") {
+    deps.authorityLookups.record(lookupKey, "no_relevant_group_found", priorLookup.group_ids);
+    const authorityContext = deps.authoritySessionContext.recordLookupState(
+      "no_relevant_group_found",
+      lookupKey,
+    );
+
     deps.workflowRecorder.record("authority_lookup_repeat_suppressed", {
       query_text: lookupKey.query_text,
       type_filter: lookupKey.type_filter,
@@ -54,6 +61,7 @@ export async function searchGroupsHandler(
       message:
         "Meshimize already found no relevant public group for this exact lookup in the current session. " +
         "Do not keep repeating the same no-result search unless the authority need has changed.",
+      authority_continuation: toAuthorityContinuation(authorityContext),
     };
   }
 
@@ -79,6 +87,11 @@ export async function searchGroupsHandler(
     });
   }
 
+  const authorityContext = deps.authoritySessionContext.recordLookupState(
+    searchResult.data.length === 0 ? "no_relevant_group_found" : "search_results_available",
+    lookupKey,
+  );
+
   const myGroups = myGroupsResult?.data ?? [];
   const memberIdSet = new Set<string>(myGroups.map((g) => g.id));
   const roleMap = new Map<string, string | null>(myGroups.map((g) => [g.id, g.my_role]));
@@ -96,6 +109,7 @@ export async function searchGroupsHandler(
       my_role: roleMap.get(g.id) ?? null,
     })),
     has_more: searchResult.meta.has_more,
+    authority_continuation: toAuthorityContinuation(authorityContext),
   };
 }
 
@@ -106,6 +120,12 @@ export async function searchGroupsHandler(
 export async function joinGroupHandler(args: { group_id: string }, deps: ToolDependencies) {
   const existing = deps.pendingJoins.getByGroupId(args.group_id);
   if (existing) {
+    const authorityContext = deps.authoritySessionContext.recordJoinApprovalPending(
+      existing.group_id,
+      existing.id,
+      existing.expires_at,
+    );
+
     return {
       status: "already_pending",
       pending_request_id: existing.id,
@@ -120,6 +140,7 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
       message:
         "A join request for this group is already pending operator approval. " +
         "Ask your operator to approve it, then call `approve_join`.",
+      authority_continuation: toAuthorityContinuation(authorityContext),
     };
   }
 
@@ -154,6 +175,12 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
     group_type: group.type,
   });
 
+  const authorityContext = deps.authoritySessionContext.recordJoinApprovalPending(
+    pending.group_id,
+    pending.id,
+    pending.expires_at,
+  );
+
   const expiresIn = Math.round((new Date(pending.expires_at).getTime() - Date.now()) / 60000);
 
   return {
@@ -174,6 +201,7 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
       "Please ask your operator for approval. " +
       "Once they approve, call `approve_join` with this group_id to complete the join. " +
       `This request expires in ${expiresIn} minute${expiresIn !== 1 ? "s" : ""}.`,
+    authority_continuation: toAuthorityContinuation(authorityContext),
   };
 }
 
@@ -194,7 +222,14 @@ export async function approveJoinHandler(args: { group_id: string }, deps: ToolD
   const result = await deps.api.joinGroup(args.group_id);
 
   deps.pendingJoins.remove(args.group_id);
-  deps.membershipPaths.markPostApprovalFirstAsk(args.group_id);
+  const authorityContext = deps.authoritySessionContext.recordReadyToAsk(
+    args.group_id,
+    "post_approval_first_ask",
+  );
+  deps.membershipPaths.markPostApprovalFirstAsk(
+    args.group_id,
+    authorityContext.expires_at ?? undefined,
+  );
   deps.workflowRecorder.record("authority_join_approved", {
     group_id: args.group_id,
     role: result.data.role,
@@ -207,7 +242,10 @@ export async function approveJoinHandler(args: { group_id: string }, deps: ToolD
     role: result.data.role,
   };
 
-  return approveResult;
+  return {
+    ...approveResult,
+    authority_continuation: toAuthorityContinuation(authorityContext),
+  };
 }
 
 /**
@@ -221,6 +259,7 @@ export async function rejectJoinHandler(args: { group_id: string }, deps: ToolDe
 
   deps.pendingJoins.remove(args.group_id);
   deps.membershipPaths.clear(args.group_id);
+  deps.authoritySessionContext.clearGroup(args.group_id);
 
   return {
     status: "rejected",
@@ -265,6 +304,7 @@ export async function leaveGroupHandler(args: { group_id: string }, deps: ToolDe
   } finally {
     deps.buffer.clearGroup(args.group_id);
     deps.membershipPaths.clear(args.group_id);
+    deps.authoritySessionContext.clearGroup(args.group_id);
   }
   return { success: true };
 }
