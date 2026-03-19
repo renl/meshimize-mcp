@@ -2,12 +2,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
 import { findMyGroupById } from "./my-groups.js";
-import type {
-  AskQuestionAnsweredResult,
-  AskQuestionTimeoutResult,
-  LateAnswerRecovery,
-  MeshimizeAuthorityProvenance,
-} from "../types/workflow.js";
+import { toAuthorityContinuation } from "../state/authority-session-context.js";
+import type { LateAnswerRecovery, MeshimizeAuthorityProvenance } from "../types/workflow.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -59,6 +55,7 @@ export async function getMessagesHandler(
   });
 
   if (buffered.length > 0) {
+    deps.authoritySessionContext.clearTimedOutIfRecovered(args.group_id, buffered);
     return { messages: buffered, source: "buffer" as const, has_more: false };
   }
 
@@ -66,6 +63,7 @@ export async function getMessagesHandler(
     after: args.after_message_id,
     limit: args.limit,
   });
+  deps.authoritySessionContext.clearTimedOutIfRecovered(args.group_id, result.data);
   return { messages: result.data, source: "api" as const, has_more: result.meta.has_more };
 }
 
@@ -109,7 +107,8 @@ export async function askQuestionHandler(
   }
 
   const timeoutSeconds = args.timeout_seconds ?? 90;
-  const membershipPath = deps.membershipPaths.resolve(args.group_id);
+  const membershipPath = deps.membershipPaths.consume(args.group_id);
+  deps.authoritySessionContext.clearGroup(args.group_id);
   const provenance = buildProvenance(group, membershipPath);
 
   if (membershipPath === "post_approval_first_ask") {
@@ -136,7 +135,13 @@ export async function askQuestionHandler(
     });
     const answer = messages.find((m) => m.message_type === "answer");
     if (answer) {
-      const result: AskQuestionAnsweredResult = {
+      const authorityContext = deps.authoritySessionContext.buildCompleted(
+        args.group_id,
+        membershipPath,
+        questionId,
+      );
+
+      const result = {
         answered: true,
         question_id: questionId,
         group_id: args.group_id,
@@ -150,9 +155,9 @@ export async function askQuestionHandler(
           responder_verified: answer.sender.verified,
           created_at: answer.created_at,
         },
+        authority_continuation: toAuthorityContinuation(authorityContext),
       };
 
-      deps.membershipPaths.consume(args.group_id);
       return result;
     }
 
@@ -165,7 +170,13 @@ export async function askQuestionHandler(
     membership_path: membershipPath,
   });
 
-  const result: AskQuestionTimeoutResult = {
+  const authorityContext = deps.authoritySessionContext.recordTimedOutWaitingForAnswer(
+    args.group_id,
+    membershipPath,
+    questionId,
+  );
+
+  const result = {
     answered: false,
     question_id: questionId,
     group_id: args.group_id,
@@ -175,9 +186,9 @@ export async function askQuestionHandler(
     message:
       `No answer received within ${timeoutSeconds}s. The question was posted successfully and the provider may still be processing. ` +
       "Use the recovery instructions to retrieve a late answer without re-asking.",
+    authority_continuation: toAuthorityContinuation(authorityContext),
   };
 
-  deps.membershipPaths.consume(args.group_id);
   return result;
 }
 

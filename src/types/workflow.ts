@@ -15,6 +15,38 @@ export interface AuthorityLookupRecord {
 
 export type ResolvedMembershipPath = "existing_membership" | "post_approval_first_ask";
 
+export type AuthoritySessionState =
+  | "search_results_available"
+  | "no_relevant_group_found"
+  | "join_approval_pending"
+  | "ready_to_ask"
+  | "timed_out_waiting_for_answer"
+  | "completed";
+
+export interface AuthoritySessionContext {
+  state: AuthoritySessionState;
+  lookup_key: AuthorityLookupKey | null;
+  group_id: string | null;
+  pending_join_id: string | null;
+  membership_path: ResolvedMembershipPath | null;
+  question_id: string | null;
+  created_at: string;
+  updated_at: string;
+  expires_at: string | null;
+}
+
+export interface AuthorityContinuation {
+  state: AuthoritySessionState;
+  scope: "lookup" | "group";
+  lookup_key: AuthorityLookupKey | null;
+  group_id: string | null;
+  pending_join_id: string | null;
+  membership_path: ResolvedMembershipPath | null;
+  question_id: string | null;
+  next_tool: "approve_join" | "ask_question" | "get_messages" | null;
+  expires_at: string | null;
+}
+
 export interface PendingJoinRequest {
   id: string;
   group_id: string;

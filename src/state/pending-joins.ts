@@ -24,13 +24,21 @@ export interface PendingJoinMap {
   dispose(): void;
 }
 
+export interface PendingJoinMapCallbacks {
+  onExpired?: (request: PendingJoinRequest) => void;
+  onRemoved?: (request: PendingJoinRequest) => void;
+}
+
 class PendingJoinMapImpl implements PendingJoinMap {
   private readonly map = new Map<string, PendingJoinRequest>();
   private readonly joinTimeoutMs: number;
   private readonly maxPendingJoins: number;
   private pruneInterval: ReturnType<typeof setInterval> | null;
 
-  constructor(config: Config) {
+  constructor(
+    config: Config,
+    private readonly callbacks?: PendingJoinMapCallbacks,
+  ) {
     this.joinTimeoutMs = config.joinTimeoutMs;
     this.maxPendingJoins = config.maxPendingJoins;
     this.pruneInterval = setInterval(() => this.pruneExpired(), 60_000);
@@ -85,7 +93,11 @@ class PendingJoinMapImpl implements PendingJoinMap {
   }
 
   remove(groupId: string): void {
-    this.map.delete(groupId);
+    const existing = this.map.get(groupId);
+    if (existing) {
+      this.map.delete(groupId);
+      this.callbacks?.onRemoved?.(existing);
+    }
   }
 
   listPending(): PendingJoinRequest[] {
@@ -99,6 +111,7 @@ class PendingJoinMapImpl implements PendingJoinMap {
     for (const [groupId, entry] of this.map.entries()) {
       if (new Date(entry.expires_at).getTime() <= now) {
         this.map.delete(groupId);
+        this.callbacks?.onExpired?.(entry);
         count++;
       }
     }
@@ -114,6 +127,9 @@ class PendingJoinMapImpl implements PendingJoinMap {
   }
 }
 
-export function createPendingJoinMap(config: Config): PendingJoinMap {
-  return new PendingJoinMapImpl(config);
+export function createPendingJoinMap(
+  config: Config,
+  callbacks?: PendingJoinMapCallbacks,
+): PendingJoinMap {
+  return new PendingJoinMapImpl(config, callbacks);
 }
