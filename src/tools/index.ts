@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { MeshimizeAPI } from "../api/client.js";
 import type { PhoenixSocket } from "../ws/client.js";
 import type { MessageBuffer } from "../buffer/message-buffer.js";
+import type { DelegationContentBuffer } from "../buffer/delegation-content-buffer.js";
 import type { PendingJoinMap } from "../state/pending-joins.js";
 import type { AuthorityLookupMap } from "../state/authority-lookups.js";
 import type { MembershipPathMap } from "../state/membership-paths.js";
@@ -24,11 +25,13 @@ import {
   registerGetPendingQuestions,
 } from "./messages.js";
 import { registerSendDirectMessage, registerGetDirectMessages } from "./direct-messages.js";
+import { registerDelegationTools } from "./delegations.js";
 
 export interface ToolDependencies {
   api: MeshimizeAPI;
   socket: PhoenixSocket;
   buffer: MessageBuffer;
+  delegationBuffer: DelegationContentBuffer;
   pendingJoins: PendingJoinMap;
   authorityLookups: AuthorityLookupMap;
   membershipPaths: MembershipPathMap;
@@ -58,4 +61,7 @@ export function registerTools(server: McpServer, deps: ToolDependencies): void {
   // Direct message tools
   registerSendDirectMessage(server, deps);
   registerGetDirectMessages(server, deps);
+
+  // Delegation tools
+  registerDelegationTools(server, deps);
 }

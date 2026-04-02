@@ -13,6 +13,7 @@ import { loadConfig } from "./config.js";
 import { MeshimizeAPI } from "./api/client.js";
 import { PhoenixSocket } from "./ws/client.js";
 import { MessageBuffer } from "./buffer/message-buffer.js";
+import { DelegationContentBuffer } from "./buffer/delegation-content-buffer.js";
 import { createAuthorityLookupMap } from "./state/authority-lookups.js";
 import { createAuthoritySessionContextStore } from "./state/authority-session-context.js";
 import { createMembershipPathMap } from "./state/membership-paths.js";
@@ -35,6 +36,7 @@ async function main(): Promise<void> {
     maxReconnectAttempts: config.maxReconnectAttempts,
   });
   const buffer = new MessageBuffer(config.bufferSize);
+  const delegationBuffer = new DelegationContentBuffer(200);
   const authorityLookups = createAuthorityLookupMap();
   const authoritySessionContext = createAuthoritySessionContextStore();
   const pendingJoins = createPendingJoinMap(config, {
@@ -52,6 +54,7 @@ async function main(): Promise<void> {
     api,
     socket,
     buffer,
+    delegationBuffer,
     pendingJoins,
     authorityLookups,
     membershipPaths,
