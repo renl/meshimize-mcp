@@ -85,7 +85,7 @@ function createMockDeps(): ToolDependencies {
       getDirectMessages: vi.fn(),
       clearGroup: vi.fn(),
     } as unknown as MessageBuffer,
-    delegationBuffer: new DelegationContentBuffer(200),
+    delegationBuffer: new DelegationContentBuffer(),
     pendingJoins: createPendingJoinMap(createTestConfig(), {
       onExpired: (request) => authoritySessionContext.clearGroup(request.group_id),
       onRemoved: (request) => authoritySessionContext.clearGroup(request.group_id),

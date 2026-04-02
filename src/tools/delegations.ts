@@ -132,14 +132,16 @@ export async function cancelDelegationHandler(
 export function registerCreateDelegation(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "create_delegation",
-    "Create a new delegation in a group. The sender is automatically set to the authenticated account. The description is transient (SQ-14) and only returned in the create response.",
+    "Create a new delegation in a group. The sender is automatically set to the authenticated account. The description is transient (SQ-14): the server only returns it in the create response, but this MCP server buffers it locally and may re-attach it when you later call get_delegation or list_delegations.",
     {
       group_id: z.string().uuid().describe("The UUID of the group"),
       description: z
         .string()
         .min(1)
         .max(32000)
-        .describe("Description of the delegated task (transient — not persisted)"),
+        .describe(
+          "Description of the delegated task (transient — not persisted by the server; buffered locally for enrichment on subsequent reads)",
+        ),
       target_account_id: z
         .string()
         .uuid()
@@ -173,7 +175,7 @@ export function registerCreateDelegation(server: McpServer, deps: ToolDependenci
 export function registerListDelegations(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "list_delegations",
-    "List delegations with optional filters. Returns metadata only — use the local content buffer to enrich with description/result when available.",
+    "List delegations with optional filters. Returns metadata from the server, optionally enriched with description/result from the local content buffer when available.",
     {
       group_id: z.string().uuid().optional().describe("Filter by group UUID"),
       state: z
@@ -262,14 +264,16 @@ export function registerAcceptDelegation(server: McpServer, deps: ToolDependenci
 export function registerCompleteDelegation(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "complete_delegation",
-    "Complete an accepted delegation with a result. The result is transient (SQ-14) and only returned in the complete response.",
+    "Complete an accepted delegation with a result. The result is transient (SQ-14): the server only returns it in the complete response, but this MCP server buffers it locally and may re-attach it when you later call get_delegation or list_delegations.",
     {
       delegation_id: z.string().uuid().describe("The UUID of the delegation to complete"),
       result: z
         .string()
         .min(1)
         .max(32000)
-        .describe("The result of the delegation (transient — not persisted)"),
+        .describe(
+          "The result of the delegation (transient — not persisted by the server; buffered locally for enrichment on subsequent reads)",
+        ),
     },
     async (args) => {
       try {

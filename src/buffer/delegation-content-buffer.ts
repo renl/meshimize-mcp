@@ -51,9 +51,10 @@ export class DelegationContentBuffer {
     }
   }
 
-  /** Returns stored content without changing LRU order. */
+  /** Returns a shallow copy of stored content without changing LRU order. */
   get(id: string): DelegationContent | undefined {
-    return this.entries.get(id);
+    const value = this.entries.get(id);
+    return value === undefined ? undefined : { ...value };
   }
 
   /** Removes an entry manually. */

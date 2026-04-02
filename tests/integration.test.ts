@@ -56,7 +56,7 @@ describeIntegration("Integration Tests", () => {
       api,
       socket,
       buffer,
-      delegationBuffer: new DelegationContentBuffer(200),
+      delegationBuffer: new DelegationContentBuffer(),
       pendingJoins,
       authorityLookups,
       membershipPaths: createMembershipPathMap(),
