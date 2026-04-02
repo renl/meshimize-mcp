@@ -125,16 +125,16 @@ async cancelDelegation(id: string): Promise<{ data: DelegationMetadataResponse }
 
 ## 6. File Plan
 
-| #   | File                                                 | Action | Purpose                                                                                 |
-| --- | ---------------------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
-| 1   | `src/types/delegations.ts`                           | Create | Type definitions per §3                                                                 |
-| 2   | `src/buffer/delegation-content-buffer.ts`            | Create | Transient content store per §4                                                          |
-| 3   | `src/api/client.ts`                                  | Edit   | Add 6 delegation API methods per §5                                                     |
-| 4   | `src/tools/delegations.ts`                           | Create | 6 MCP tool registrations per §2                                                         |
-| 5   | `src/tools/index.ts`                                 | Edit   | Import + register delegation tools; add `DelegationContentBuffer` to `ToolDependencies` |
-| 6   | `src/index.ts` (or main entry)                       | Edit   | Instantiate `DelegationContentBuffer`, pass into deps                                   |
-| 7   | `__tests__/tools/delegations.test.ts`                | Create | Unit tests for all 6 tools                                                              |
-| 8   | `__tests__/buffer/delegation-content-buffer.test.ts` | Create | Buffer unit tests                                                                       |
+| #   | File                                      | Action | Purpose                                                                                 |
+| --- | ----------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| 1   | `src/types/delegations.ts`                | Create | Type definitions per §3                                                                 |
+| 2   | `src/buffer/delegation-content-buffer.ts` | Create | Transient content store per §4                                                          |
+| 3   | `src/api/client.ts`                       | Edit   | Add 6 delegation API methods per §5                                                     |
+| 4   | `src/tools/delegations.ts`                | Create | 6 MCP tool registrations per §2                                                         |
+| 5   | `src/tools/index.ts`                      | Edit   | Import + register delegation tools; add `DelegationContentBuffer` to `ToolDependencies` |
+| 6   | `src/index.ts` (or main entry)            | Edit   | Instantiate `DelegationContentBuffer`, pass into deps                                   |
+| 7   | `tests/delegation-tool-handlers.test.ts`  | Create | Unit tests for all 6 tools                                                              |
+| 8   | `tests/delegation-content-buffer.test.ts` | Create | Buffer unit tests                                                                       |
 
 ---
 

@@ -36,7 +36,7 @@ async function main(): Promise<void> {
     maxReconnectAttempts: config.maxReconnectAttempts,
   });
   const buffer = new MessageBuffer(config.bufferSize);
-  const delegationBuffer = new DelegationContentBuffer(200);
+  const delegationBuffer = new DelegationContentBuffer();
   const authorityLookups = createAuthorityLookupMap();
   const authoritySessionContext = createAuthoritySessionContextStore();
   const pendingJoins = createPendingJoinMap(config, {
