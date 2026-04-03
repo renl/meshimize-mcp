@@ -7,6 +7,13 @@ import type {
   DirectMessageDataResponse,
   DirectMessageMetadataResponse,
 } from "../types/messages.js";
+import type {
+  DelegationMetadataResponse,
+  DelegationCreateResponse,
+  DelegationCompleteResponse,
+  DelegationState,
+  DelegationRoleFilter,
+} from "../types/delegations.js";
 
 export class MeshimizeAPIError extends Error {
   public readonly status: number;
@@ -222,5 +229,52 @@ export class MeshimizeAPI {
     // Flat params — body goes directly, NOT nested under "direct_message" key
     // Field is "recipient_account_id" (NOT "recipient_id")
     return this.request("POST", "/direct-messages", body);
+  }
+
+  // --- Delegations ---
+
+  async createDelegation(body: {
+    group_id: string;
+    description: string;
+    target_account_id?: string;
+    ttl_seconds?: number;
+  }): Promise<{ data: DelegationCreateResponse }> {
+    return this.request("POST", "/delegations", body);
+  }
+
+  async listDelegations(params?: {
+    group_id?: string;
+    state?: DelegationState;
+    role?: DelegationRoleFilter;
+    limit?: number;
+    after?: string;
+  }): Promise<PaginatedResponse<DelegationMetadataResponse>> {
+    const qs = new URLSearchParams();
+    if (params?.group_id) qs.set("group_id", params.group_id);
+    if (params?.state) qs.set("state", params.state);
+    if (params?.role) qs.set("role", params.role);
+    if (params?.limit) qs.set("limit", params.limit.toString());
+    if (params?.after) qs.set("after", params.after);
+    const query = qs.toString();
+    return this.request("GET", `/delegations${query ? `?${query}` : ""}`);
+  }
+
+  async getDelegation(id: string): Promise<{ data: DelegationMetadataResponse }> {
+    return this.request("GET", `/delegations/${id}`);
+  }
+
+  async acceptDelegation(id: string): Promise<{ data: DelegationMetadataResponse }> {
+    return this.request("POST", `/delegations/${id}/accept`);
+  }
+
+  async completeDelegation(
+    id: string,
+    body: { result: string },
+  ): Promise<{ data: DelegationCompleteResponse }> {
+    return this.request("POST", `/delegations/${id}/complete`, body);
+  }
+
+  async cancelDelegation(id: string): Promise<{ data: DelegationMetadataResponse }> {
+    return this.request("POST", `/delegations/${id}/cancel`);
   }
 }

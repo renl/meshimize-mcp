@@ -21,6 +21,7 @@ import {
 } from "../src/tools/direct-messages.js";
 import type { MeshimizeAPI } from "../src/api/client.js";
 import type { MessageBuffer } from "../src/buffer/message-buffer.js";
+import { DelegationContentBuffer } from "../src/buffer/delegation-content-buffer.js";
 import type { Config } from "../src/config.js";
 import { createAuthorityLookupMap } from "../src/state/authority-lookups.js";
 import { createAuthoritySessionContextStore } from "../src/state/authority-session-context.js";
@@ -63,6 +64,12 @@ function createMockDeps(): ToolDependencies {
       getDirectMessages: vi.fn(),
       sendDirectMessage: vi.fn(),
       getAccount: vi.fn(),
+      createDelegation: vi.fn(),
+      listDelegations: vi.fn(),
+      getDelegation: vi.fn(),
+      acceptDelegation: vi.fn(),
+      completeDelegation: vi.fn(),
+      cancelDelegation: vi.fn(),
     } as unknown as MeshimizeAPI,
     socket: {
       channel: vi.fn(),
@@ -72,6 +79,7 @@ function createMockDeps(): ToolDependencies {
       getDirectMessages: vi.fn(),
       clearGroup: vi.fn(),
     } as unknown as MessageBuffer,
+    delegationBuffer: new DelegationContentBuffer(),
     pendingJoins: createPendingJoinMap(createTestConfig(), {
       onExpired: (request) => authoritySessionContext.clearGroup(request.group_id),
       onRemoved: (request) => authoritySessionContext.clearGroup(request.group_id),

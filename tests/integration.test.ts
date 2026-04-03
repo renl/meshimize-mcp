@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { MeshimizeAPI } from "../src/api/client.js";
 import { MessageBuffer } from "../src/buffer/message-buffer.js";
+import { DelegationContentBuffer } from "../src/buffer/delegation-content-buffer.js";
 import { loadConfig } from "../src/config.js";
 import { createAuthorityLookupMap } from "../src/state/authority-lookups.js";
 import { createAuthoritySessionContextStore } from "../src/state/authority-session-context.js";
@@ -55,6 +56,7 @@ describeIntegration("Integration Tests", () => {
       api,
       socket,
       buffer,
+      delegationBuffer: new DelegationContentBuffer(),
       pendingJoins,
       authorityLookups,
       membershipPaths: createMembershipPathMap(),
