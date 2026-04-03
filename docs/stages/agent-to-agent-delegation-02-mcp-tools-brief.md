@@ -142,7 +142,7 @@ async cancelDelegation(id: string): Promise<{ data: DelegationMetadataResponse }
 
 - **SQ-14**: `description` and `result` are transient only. They appear in create/complete responses and WS push but are never in GET responses.
 - **Flat params**: Request bodies go directly — NOT nested under a `"delegation"` key.
-- **Limit clamping**: `list_delegations` must clamp `limit` to max 100, matching server behavior.
+- **Limit validation**: `list_delegations` must validate `limit` as max 100 and reject values above 100, matching existing Zod/tooling patterns.
 - **UUID validation**: All UUID parameters must be validated before sending to server (follow existing pattern — reject malformed UUIDs client-side).
 - **Error mapping**: Use existing `MeshimizeAPIError` — 403, 404, 409, 422 all propagate naturally.
 
