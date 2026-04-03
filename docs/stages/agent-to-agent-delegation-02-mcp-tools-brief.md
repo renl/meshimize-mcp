@@ -84,7 +84,7 @@ interface DelegationContent {
 - `storeResult(id, result)` — called after successful complete.
 - `get(id)` → `DelegationContent | undefined`.
 - `delete(id)` — manual cleanup.
-- Max entries cap (e.g., 1000) with LRU or oldest-first eviction.
+- Max entries cap (default 200) with least-recently-written eviction.
 
 ---
 

@@ -1,10 +1,12 @@
 /**
- * DelegationContentBuffer — In-memory LRU store for transient delegation content (SQ-14).
+ * DelegationContentBuffer — In-memory bounded store for transient delegation content (SQ-14).
  *
  * Stores `description` (from create) and `result` (from complete) keyed by delegation ID.
  * Content is never persisted — it exists in memory only for the current session.
  *
- * Eviction policy: LRU — least recently used entries are evicted first when capacity is exceeded.
+ * Eviction policy: Least Recently Written — entries are ordered by their last write
+ * (storeDescription / storeResult). Reads via `get()` do not promote entries.
+ * When capacity is exceeded, the entry with the oldest write is evicted first.
  */
 
 export interface DelegationContent {
@@ -23,11 +25,11 @@ export class DelegationContentBuffer {
     this.maxEntries = maxEntries;
   }
 
-  /** Stores description for a delegation. Creates entry if needed. Promotes to most-recently-used. */
+  /** Stores description for a delegation. Creates entry if needed. Promotes to most-recently-written. */
   storeDescription(id: string, description: string): void {
     if (this.maxEntries === 0) return;
     const existing = this.entries.get(id);
-    // Delete and re-insert to promote to most-recently-used (Map preserves insertion order)
+    // Delete and re-insert to promote to most-recently-written (Map preserves insertion order)
     if (existing !== undefined) {
       this.entries.delete(id);
       this.entries.set(id, { ...existing, description });
@@ -37,11 +39,11 @@ export class DelegationContentBuffer {
     }
   }
 
-  /** Stores result for a delegation. Creates entry if needed. Promotes to most-recently-used. */
+  /** Stores result for a delegation. Creates entry if needed. Promotes to most-recently-written. */
   storeResult(id: string, result: string): void {
     if (this.maxEntries === 0) return;
     const existing = this.entries.get(id);
-    // Delete and re-insert to promote to most-recently-used (Map preserves insertion order)
+    // Delete and re-insert to promote to most-recently-written (Map preserves insertion order)
     if (existing !== undefined) {
       this.entries.delete(id);
       this.entries.set(id, { ...existing, result });
@@ -51,7 +53,7 @@ export class DelegationContentBuffer {
     }
   }
 
-  /** Returns a shallow copy of stored content without changing LRU order. */
+  /** Returns a shallow copy of stored content. Does not affect eviction order. */
   get(id: string): DelegationContent | undefined {
     const value = this.entries.get(id);
     return value === undefined ? undefined : { ...value };
@@ -62,10 +64,10 @@ export class DelegationContentBuffer {
     this.entries.delete(id);
   }
 
-  /** Evicts the least recently used entry if the buffer is at capacity. */
+  /** Evicts the least recently written entry if the buffer is at capacity. */
   private evictIfNeeded(): void {
     if (this.entries.size >= this.maxEntries) {
-      // Map iteration order is insertion order — first key is the LRU entry
+      // Map iteration order is insertion order — first key is the least recently written entry
       const firstKey = this.entries.keys().next().value;
       if (firstKey !== undefined) {
         this.entries.delete(firstKey);

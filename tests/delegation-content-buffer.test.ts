@@ -63,7 +63,7 @@ describe("DelegationContentBuffer", () => {
     expect(buffer.get("nonexistent")).toBeUndefined();
   });
 
-  it("get does not change LRU order", () => {
+  it("get does not change eviction order", () => {
     const buffer = new DelegationContentBuffer(3);
     buffer.storeDescription("d-1", "First");
     buffer.storeDescription("d-2", "Second");
@@ -72,7 +72,7 @@ describe("DelegationContentBuffer", () => {
     // Access d-1 via get — should NOT promote it
     buffer.get("d-1");
 
-    // Adding a new entry should evict d-1 (the LRU), not d-2
+    // Adding a new entry should evict d-1 (least recently written), not d-2
     buffer.storeDescription("d-4", "Fourth");
 
     expect(buffer.get("d-1")).toBeUndefined();
@@ -97,15 +97,15 @@ describe("DelegationContentBuffer", () => {
     expect(buffer.get("nonexistent")).toBeUndefined();
   });
 
-  // --- LRU eviction ---
+  // --- Eviction (least recently written) ---
 
-  it("evicts least recently used entry when at capacity", () => {
+  it("evicts least recently written entry when at capacity", () => {
     const buffer = new DelegationContentBuffer(3);
     buffer.storeDescription("d-1", "First");
     buffer.storeDescription("d-2", "Second");
     buffer.storeDescription("d-3", "Third");
 
-    // Buffer is full. Adding d-4 should evict d-1 (LRU).
+    // Buffer is full. Adding d-4 should evict d-1 (least recently written).
     buffer.storeDescription("d-4", "Fourth");
 
     expect(buffer.get("d-1")).toBeUndefined();
@@ -114,16 +114,16 @@ describe("DelegationContentBuffer", () => {
     expect(buffer.get("d-4")).toEqual({ description: "Fourth" });
   });
 
-  it("storeDescription promotes entry to most-recently-used", () => {
+  it("storeDescription promotes entry to most-recently-written", () => {
     const buffer = new DelegationContentBuffer(3);
     buffer.storeDescription("d-1", "First");
     buffer.storeDescription("d-2", "Second");
     buffer.storeDescription("d-3", "Third");
 
-    // Touch d-1 by storing description again — promotes to MRU
+    // Touch d-1 by storing description again — promotes to most-recently-written
     buffer.storeDescription("d-1", "First updated");
 
-    // Now d-2 is LRU. Adding d-4 should evict d-2.
+    // Now d-2 is least recently written. Adding d-4 should evict d-2.
     buffer.storeDescription("d-4", "Fourth");
 
     expect(buffer.get("d-1")).toEqual({ description: "First updated" });
@@ -132,16 +132,16 @@ describe("DelegationContentBuffer", () => {
     expect(buffer.get("d-4")).toEqual({ description: "Fourth" });
   });
 
-  it("storeResult promotes entry to most-recently-used", () => {
+  it("storeResult promotes entry to most-recently-written", () => {
     const buffer = new DelegationContentBuffer(3);
     buffer.storeDescription("d-1", "First");
     buffer.storeDescription("d-2", "Second");
     buffer.storeDescription("d-3", "Third");
 
-    // Touch d-1 by storing result — promotes to MRU
+    // Touch d-1 by storing result — promotes to MRW
     buffer.storeResult("d-1", "Result for first");
 
-    // Now d-2 is LRU. Adding d-4 should evict d-2.
+    // Now d-2 is least recently written. Adding d-4 should evict d-2.
     buffer.storeDescription("d-4", "Fourth");
 
     expect(buffer.get("d-1")).toEqual({ description: "First", result: "Result for first" });
@@ -150,7 +150,7 @@ describe("DelegationContentBuffer", () => {
     expect(buffer.get("d-4")).toEqual({ description: "Fourth" });
   });
 
-  it("eviction cascade — multiple entries evicted in LRU order", () => {
+  it("eviction cascade — multiple entries evicted in write order", () => {
     const buffer = new DelegationContentBuffer(2);
     buffer.storeDescription("d-1", "First");
     buffer.storeDescription("d-2", "Second");
