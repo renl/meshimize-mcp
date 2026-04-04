@@ -968,6 +968,104 @@ describe("delegation tool handlers", () => {
       expect(result.delegation.description).toBeNull();
       expect(result.delegation.result).toBeNull();
     });
+
+    it("does not rehydrate purged acknowledged content from previously buffered content", async () => {
+      // Step 1: buffer content via create + complete flow
+      const createDelegation = makeDelegation({
+        state: "pending",
+        description: "Buffered task",
+      });
+      (deps.api.createDelegation as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: createDelegation,
+      });
+      await createDelegationHandler(
+        {
+          group_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+          description: "Buffered task",
+        },
+        deps,
+      );
+
+      const completeDelegation = makeDelegation({
+        state: "completed",
+        result: "Buffered result",
+      });
+      (deps.api.completeDelegation as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: completeDelegation,
+      });
+      await completeDelegationHandler(
+        { delegation_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", result: "Buffered result" },
+        deps,
+      );
+
+      // Verify buffer has content
+      expect(deps.delegationBuffer.get("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")).toEqual({
+        description: "Buffered task",
+        result: "Buffered result",
+      });
+
+      // Step 2: server returns acknowledged with purged content
+      const purgedDelegation = makeDelegation({
+        state: "acknowledged",
+        acknowledged_at: "2026-04-02T04:00:00Z",
+        description: null,
+        result: null,
+      });
+      (deps.api.getDelegation as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: purgedDelegation,
+      });
+
+      const result = await getDelegationHandler(
+        { delegation_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" },
+        deps,
+      );
+
+      // Must NOT rehydrate from buffer — purged content stays null
+      expect(result.delegation.state).toBe("acknowledged");
+      expect(result.delegation.description).toBeNull();
+      expect(result.delegation.result).toBeNull();
+
+      // Buffer should be evicted for this delegation
+      expect(deps.delegationBuffer.get("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")).toBeUndefined();
+    });
+
+    it("does not rehydrate purged expired content from previously buffered content", async () => {
+      // Seed buffer
+      const createDelegation = makeDelegation({
+        state: "pending",
+        description: "Expiring task",
+      });
+      (deps.api.createDelegation as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: createDelegation,
+      });
+      await createDelegationHandler(
+        {
+          group_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+          description: "Expiring task",
+        },
+        deps,
+      );
+
+      // Server returns expired with purged content
+      const expiredDelegation = makeDelegation({
+        state: "expired",
+        description: null,
+        result: null,
+      });
+      (deps.api.getDelegation as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: expiredDelegation,
+      });
+
+      const result = await getDelegationHandler(
+        { delegation_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" },
+        deps,
+      );
+
+      expect(result.delegation.state).toBe("expired");
+      expect(result.delegation.description).toBeNull();
+      expect(result.delegation.result).toBeNull();
+      expect(deps.delegationBuffer.get("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")).toBeUndefined();
+    });
   });
 
   // --- Error propagation ---

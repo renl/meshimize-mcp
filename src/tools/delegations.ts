@@ -4,12 +4,23 @@ import type { ToolDependencies } from "./index.js";
 import type { Delegation } from "../types/delegations.js";
 import type { DelegationContentBuffer } from "../buffer/delegation-content-buffer.js";
 
+/** States where content has been intentionally purged server-side. */
+const PURGED_STATES = new Set(["acknowledged", "expired"]);
+
 /**
  * Enriches a delegation with content from the local buffer as fallback.
  * Server-provided content is primary. Buffer content used only when server returns null
  * and buffer has a cached value (e.g., stale read, or content not yet reflected).
+ *
+ * For delegations in purged states (acknowledged, expired), buffer fallback is skipped
+ * and any stale buffer entry is evicted to prevent re-exposing purged content.
  */
 function enrichWithBuffer(delegation: Delegation, buffer: DelegationContentBuffer): Delegation {
+  // Never re-attach purged content — evict stale buffer entries for terminal-purged states
+  if (PURGED_STATES.has(delegation.state)) {
+    buffer.delete(delegation.id);
+    return delegation;
+  }
   const content = buffer.get(delegation.id);
   if (!content) return delegation;
   return {
