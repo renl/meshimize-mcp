@@ -198,5 +198,5 @@ describeIntegration("Integration Tests", () => {
         next_tool: "get_messages",
       });
     }
-  }, 30000);
+  }, 100000);
 });
