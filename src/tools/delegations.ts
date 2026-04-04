@@ -1,11 +1,14 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
-import type { Delegation } from "../types/delegations.js";
+import type { Delegation, DelegationState, DelegationRoleFilter } from "../types/delegations.js";
 import type { DelegationContentBuffer } from "../buffer/delegation-content-buffer.js";
 
 /** States where content has been intentionally purged server-side. */
-const PURGED_STATES = new Set(["acknowledged", "expired"]);
+const PURGED_STATES: ReadonlySet<DelegationState> = new Set<DelegationState>([
+  "acknowledged",
+  "expired",
+]);
 
 /**
  * Enriches a delegation with content from the local buffer as fallback.
@@ -26,8 +29,9 @@ function enrichWithBuffer(delegation: Delegation, buffer: DelegationContentBuffe
   return {
     ...delegation,
     // Only use buffer content as fallback when server returns null
-    description: delegation.description ?? content.description ?? delegation.description,
-    result: delegation.result ?? content.result ?? delegation.result,
+    description:
+      delegation.description === null ? (content.description ?? null) : delegation.description,
+    result: delegation.result === null ? (content.result ?? null) : delegation.result,
   };
 }
 
@@ -72,8 +76,8 @@ export async function createDelegationHandler(
 export async function listDelegationsHandler(
   args: {
     group_id?: string;
-    state?: "pending" | "accepted" | "completed" | "acknowledged" | "cancelled" | "expired";
-    role?: "sender" | "assignee" | "available";
+    state?: DelegationState;
+    role?: DelegationRoleFilter;
     limit?: number;
     after?: string;
   },
