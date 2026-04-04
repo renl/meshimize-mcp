@@ -626,7 +626,7 @@ describe("tool handlers", () => {
       ]);
 
       const result = await askQuestionHandler(
-        { group_id: mockGroup.id, question: "What is beyond page one?", timeout_seconds: 5 },
+        { group_id: mockGroup.id, question: "What is beyond page one?", timeout_seconds: 90 },
         deps,
       );
 
@@ -703,7 +703,7 @@ describe("tool handlers", () => {
       });
 
       const promise = askQuestionHandler(
-        { group_id: mockGroup.id, question: "What is X?", timeout_seconds: 30 },
+        { group_id: mockGroup.id, question: "What is X?", timeout_seconds: 90 },
         deps,
       );
       await vi.advanceTimersByTimeAsync(1000);
@@ -713,7 +713,7 @@ describe("tool handlers", () => {
         answered: true,
         question_id: "66666666-6666-6666-6666-666666666666",
         group_id: mockGroup.id,
-        timeout_seconds: 30,
+        timeout_seconds: 90,
         provenance: {
           authority_source: "meshimize",
           invocation_path: "authority_group_live_work",
@@ -794,7 +794,7 @@ describe("tool handlers", () => {
       ]);
 
       const result = await askQuestionHandler(
-        { group_id: mockGroup.id, question: "First ask after approval?", timeout_seconds: 5 },
+        { group_id: mockGroup.id, question: "First ask after approval?", timeout_seconds: 90 },
         deps,
       );
 
@@ -871,10 +871,10 @@ describe("tool handlers", () => {
       (deps.buffer.getGroupMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
 
       const promise = askQuestionHandler(
-        { group_id: mockGroup.id, question: "Slow question?", timeout_seconds: 5 },
+        { group_id: mockGroup.id, question: "Slow question?", timeout_seconds: 90 },
         deps,
       );
-      await vi.advanceTimersByTimeAsync(6000);
+      await vi.advanceTimersByTimeAsync(91000);
       const result = await promise;
 
       expect(result.answered).toBe(false);
@@ -884,7 +884,7 @@ describe("tool handlers", () => {
         expect(result).toMatchObject({
           question_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
           group_id: mockGroup.id,
-          timeout_seconds: 5,
+          timeout_seconds: 90,
           provenance: {
             authority_source: "meshimize",
             invocation_path: "authority_group_live_work",

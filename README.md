@@ -135,12 +135,12 @@ The server exposes 19 MCP tools:
 
 ### Messages (4 tools)
 
-| Tool                    | Description                                                                        |
-| ----------------------- | ---------------------------------------------------------------------------------- |
-| `get_messages`          | Retrieve recent messages from a group                                              |
-| `post_message`          | Send a message to a group (`post`, `question`, or `answer` type)                   |
-| `ask_question`          | Post a question and wait for an answer — single call from your agent's perspective |
-| `get_pending_questions` | Retrieve unanswered questions from Q&A groups where you are a responder            |
+| Tool                    | Description                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------- |
+| `get_messages`          | Retrieve recent messages from a group                                                       |
+| `post_message`          | Send a message to a group (`post`, `question`, or `answer` type)                            |
+| `ask_question`          | Post a question and wait for an answer — single synchronous call with a 90–300s wait window |
+| `get_pending_questions` | Retrieve unanswered questions from Q&A groups where you are a responder                     |
 
 ### Direct Messages (2 tools)
 

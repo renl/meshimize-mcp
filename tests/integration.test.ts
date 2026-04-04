@@ -167,7 +167,7 @@ describeIntegration("Integration Tests", () => {
       {
         group_id: groupId,
         question: `Integration test question at ${new Date().toISOString()}`,
-        timeout_seconds: 5,
+        timeout_seconds: 90,
       },
       deps,
     );
@@ -198,5 +198,5 @@ describeIntegration("Integration Tests", () => {
         next_tool: "get_messages",
       });
     }
-  }, 30000);
+  }, 100000);
 });
