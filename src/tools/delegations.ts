@@ -1,23 +1,37 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
-import type { DelegationMetadataResponse } from "../types/delegations.js";
+import type { Delegation, DelegationState, DelegationRoleFilter } from "../types/delegations.js";
 import type { DelegationContentBuffer } from "../buffer/delegation-content-buffer.js";
 
+/** States where content has been intentionally purged server-side. */
+const PURGED_STATES: ReadonlySet<DelegationState> = new Set<DelegationState>([
+  "acknowledged",
+  "expired",
+]);
+
 /**
- * Enriches a delegation metadata response with transient content from the local buffer.
- * Returns the delegation with `description` and/or `result` merged in if available.
+ * Enriches a delegation with content from the local buffer as fallback.
+ * Server-provided content is primary. Buffer content used only when server returns null
+ * and buffer has a cached value (e.g., stale read, or content not yet reflected).
+ *
+ * For delegations in purged states (acknowledged, expired), buffer fallback is skipped
+ * and any stale buffer entry is evicted to prevent re-exposing purged content.
  */
-function enrichWithBuffer(
-  delegation: DelegationMetadataResponse,
-  buffer: DelegationContentBuffer,
-): DelegationMetadataResponse & { description?: string; result?: string } {
+function enrichWithBuffer(delegation: Delegation, buffer: DelegationContentBuffer): Delegation {
+  // Never re-attach purged content — evict stale buffer entries for terminal-purged states
+  if (PURGED_STATES.has(delegation.state)) {
+    buffer.delete(delegation.id);
+    return delegation;
+  }
   const content = buffer.get(delegation.id);
   if (!content) return delegation;
   return {
     ...delegation,
-    ...(content.description !== undefined && { description: content.description }),
-    ...(content.result !== undefined && { result: content.result }),
+    // Only use buffer content as fallback when server returns null
+    description:
+      delegation.description === null ? (content.description ?? null) : delegation.description,
+    result: delegation.result === null ? (content.result ?? null) : delegation.result,
   };
 }
 
@@ -50,18 +64,20 @@ export async function createDelegationHandler(
   }
 
   const result = await deps.api.createDelegation(body);
-  deps.delegationBuffer.storeDescription(result.data.id, result.data.description);
+  if (result.data.description !== null) {
+    deps.delegationBuffer.storeDescription(result.data.id, result.data.description);
+  }
   return { delegation: result.data };
 }
 
 /**
- * Lists delegations with optional filters. Enriches metadata with local buffer content.
+ * Lists delegations with optional filters. Enriches with local buffer content as fallback.
  */
 export async function listDelegationsHandler(
   args: {
     group_id?: string;
-    state?: "pending" | "accepted" | "completed" | "cancelled" | "expired";
-    role?: "sender" | "assignee" | "available";
+    state?: DelegationState;
+    role?: DelegationRoleFilter;
     limit?: number;
     after?: string;
   },
@@ -80,7 +96,7 @@ export async function listDelegationsHandler(
 }
 
 /**
- * Gets a single delegation by ID. Enriches metadata with local buffer content.
+ * Gets a single delegation by ID. Enriches with local buffer content as fallback.
  */
 export async function getDelegationHandler(
   args: { delegation_id: string },
@@ -112,7 +128,9 @@ export async function completeDelegationHandler(
   const apiResult = await deps.api.completeDelegation(args.delegation_id, {
     result: args.result,
   });
-  deps.delegationBuffer.storeResult(apiResult.data.id, apiResult.data.result);
+  if (apiResult.data.result !== null) {
+    deps.delegationBuffer.storeResult(apiResult.data.id, apiResult.data.result);
+  }
   return { delegation: apiResult.data };
 }
 
@@ -127,12 +145,37 @@ export async function cancelDelegationHandler(
   return { delegation: result.data };
 }
 
+/**
+ * Acknowledges a completed delegation. Purges content and evicts from local buffer.
+ */
+export async function acknowledgeDelegationHandler(
+  args: { delegation_id: string },
+  deps: ToolDependencies,
+) {
+  const result = await deps.api.acknowledgeDelegation(args.delegation_id);
+  // Content is purged on acknowledge — evict from local buffer
+  deps.delegationBuffer.delete(result.data.id);
+  return { delegation: result.data };
+}
+
+/**
+ * Extends the TTL of a delegation.
+ */
+export async function extendDelegationHandler(
+  args: { delegation_id: string; ttl_seconds?: number },
+  deps: ToolDependencies,
+) {
+  const body = args.ttl_seconds !== undefined ? { ttl_seconds: args.ttl_seconds } : undefined;
+  const result = await deps.api.extendDelegation(args.delegation_id, body);
+  return { delegation: result.data };
+}
+
 // --- Registration functions ---
 
 export function registerCreateDelegation(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "create_delegation",
-    "Create a new delegation in a group. The sender is automatically set to the authenticated account. The description is transient (SQ-14): the server only returns it in the create response, but this MCP server buffers it locally and may re-attach it when you later call get_delegation or list_delegations.",
+    "Create a new delegation in a group. The sender is automatically set to the authenticated account. The description is persisted server-side with lifecycle-tied cleanup (purged on acknowledge or TTL expiry).",
     {
       group_id: z.string().uuid().describe("The UUID of the group"),
       description: z
@@ -140,7 +183,7 @@ export function registerCreateDelegation(server: McpServer, deps: ToolDependenci
         .min(1)
         .max(32000)
         .describe(
-          "Description of the delegated task (transient — not persisted by the server; buffered locally for enrichment on subsequent reads)",
+          "Description of the delegated task (persisted server-side; purged on acknowledge or TTL expiry)",
         ),
       target_account_id: z
         .string()
@@ -153,7 +196,7 @@ export function registerCreateDelegation(server: McpServer, deps: ToolDependenci
         .min(300)
         .max(604800)
         .optional()
-        .describe("Time-to-live in seconds (300–604800). Defaults to server setting."),
+        .describe("Time-to-live in seconds (300\u2013604800). Defaults to server setting."),
     },
     async (args) => {
       try {
@@ -175,11 +218,11 @@ export function registerCreateDelegation(server: McpServer, deps: ToolDependenci
 export function registerListDelegations(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "list_delegations",
-    "List delegations with optional filters. Returns metadata from the server, optionally enriched with description/result from the local content buffer when available.",
+    "List delegations with optional filters. Returns delegations from the server with content included. Local buffer provides fallback enrichment when server returns null for content fields.",
     {
       group_id: z.string().uuid().optional().describe("Filter by group UUID"),
       state: z
-        .enum(["pending", "accepted", "completed", "cancelled", "expired"])
+        .enum(["pending", "accepted", "completed", "acknowledged", "cancelled", "expired"])
         .optional()
         .describe("Filter by delegation state"),
       role: z
@@ -216,7 +259,7 @@ export function registerListDelegations(server: McpServer, deps: ToolDependencie
 export function registerGetDelegation(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "get_delegation",
-    "Get a single delegation by ID. Returns metadata from server, enriched with description/result from local content buffer when available.",
+    "Get a single delegation by ID. Returns delegation from server with content included. Local buffer provides fallback enrichment when server returns null for content fields.",
     {
       delegation_id: z.string().uuid().describe("The UUID of the delegation"),
     },
@@ -264,7 +307,7 @@ export function registerAcceptDelegation(server: McpServer, deps: ToolDependenci
 export function registerCompleteDelegation(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "complete_delegation",
-    "Complete an accepted delegation with a result. The result is transient (SQ-14): the server only returns it in the complete response, but this MCP server buffers it locally and may re-attach it when you later call get_delegation or list_delegations.",
+    "Complete an accepted delegation with a result. The result is persisted server-side with lifecycle-tied cleanup (purged on acknowledge or TTL expiry).",
     {
       delegation_id: z.string().uuid().describe("The UUID of the delegation to complete"),
       result: z
@@ -272,7 +315,7 @@ export function registerCompleteDelegation(server: McpServer, deps: ToolDependen
         .min(1)
         .max(32000)
         .describe(
-          "The result of the delegation (transient — not persisted by the server; buffered locally for enrichment on subsequent reads)",
+          "The result of the delegation (persisted server-side; purged on acknowledge or TTL expiry)",
         ),
     },
     async (args) => {
@@ -316,8 +359,65 @@ export function registerCancelDelegation(server: McpServer, deps: ToolDependenci
   );
 }
 
+export function registerAcknowledgeDelegation(server: McpServer, deps: ToolDependencies): void {
+  server.tool(
+    "acknowledge_delegation",
+    "Acknowledge a completed delegation. Only the sender can call. Transitions to 'acknowledged' state and purges description/result content. Clears the local content buffer for this delegation.",
+    {
+      delegation_id: z.string().uuid().describe("The UUID of the delegation to acknowledge"),
+    },
+    async (args) => {
+      try {
+        const result = await acknowledgeDelegationHandler(args, deps);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
+
+export function registerExtendDelegation(server: McpServer, deps: ToolDependencies): void {
+  server.tool(
+    "extend_delegation",
+    "Extend the TTL of a delegation. Only the sender can call. Works on pending, accepted, or completed delegations. If ttl_seconds is provided, adds that many seconds to the current expires_at. If omitted, resets expires_at to now + original_ttl_seconds.",
+    {
+      delegation_id: z.string().uuid().describe("The UUID of the delegation to extend"),
+      ttl_seconds: z
+        .number()
+        .int()
+        .min(300)
+        .max(604800)
+        .optional()
+        .describe(
+          "Seconds to add to current expires_at (300\u2013604800). If omitted, resets to now + original_ttl_seconds.",
+        ),
+    },
+    async (args) => {
+      try {
+        const result = await extendDelegationHandler(args, deps);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
+
 /**
- * Registers all 6 delegation MCP tool handlers on the server.
+ * Registers all 8 delegation MCP tool handlers on the server.
  */
 export function registerDelegationTools(server: McpServer, deps: ToolDependencies): void {
   registerCreateDelegation(server, deps);
@@ -326,4 +426,6 @@ export function registerDelegationTools(server: McpServer, deps: ToolDependencie
   registerAcceptDelegation(server, deps);
   registerCompleteDelegation(server, deps);
   registerCancelDelegation(server, deps);
+  registerAcknowledgeDelegation(server, deps);
+  registerExtendDelegation(server, deps);
 }
