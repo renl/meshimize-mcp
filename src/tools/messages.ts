@@ -333,11 +333,13 @@ export function registerAskQuestion(server: McpServer, deps: ToolDependencies): 
       timeout_seconds: z
         .number()
         .int()
-        .min(5)
+        .min(90)
         .max(300)
         .optional()
         .default(90)
-        .describe("How long to wait for an answer (seconds)"),
+        .describe(
+          "How long to wait for an answer (seconds). Minimum 90s to allow provider RAG pipelines time to respond.",
+        ),
     },
     async (args) => {
       try {
