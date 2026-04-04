@@ -396,4 +396,123 @@ describe("MeshimizeAPI", () => {
       expect(apiErr.status).toBe(500);
     }
   });
+
+  // --- Delegation REST methods ---
+
+  it("acknowledgeDelegation() sends POST to correct path with no body", async () => {
+    const delegationData = {
+      data: {
+        id: "del-1",
+        state: "acknowledged",
+        group_id: "group-1",
+        group_name: "Test Group",
+        sender_account_id: "sender-1",
+        sender_display_name: "Sender",
+        target_account_id: null,
+        target_display_name: null,
+        assignee_account_id: "assignee-1",
+        assignee_display_name: "Assignee",
+        description: null,
+        result: null,
+        original_ttl_seconds: 86400,
+        expires_at: "2026-04-03T00:00:00Z",
+        accepted_at: "2026-04-02T01:00:00Z",
+        completed_at: "2026-04-02T02:00:00Z",
+        acknowledged_at: "2026-04-02T03:00:00Z",
+        cancelled_at: null,
+        inserted_at: "2026-04-02T00:00:00Z",
+        updated_at: "2026-04-02T03:00:00Z",
+      },
+    };
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(200, delegationData));
+
+    const api = new MeshimizeAPI(createTestConfig());
+    const result = await api.acknowledgeDelegation("del-1");
+
+    expect(result).toEqual(delegationData);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://api.meshimize.com/api/v1/delegations/del-1/acknowledge");
+    expect(options.method).toBe("POST");
+    // No Content-Type header since there is no body
+    expect(options.headers["Content-Type"]).toBeUndefined();
+    expect(options.body).toBeUndefined();
+  });
+
+  it("extendDelegation() sends POST with body when ttl_seconds provided", async () => {
+    const delegationData = {
+      data: {
+        id: "del-1",
+        state: "pending",
+        group_id: "group-1",
+        group_name: "Test Group",
+        sender_account_id: "sender-1",
+        sender_display_name: "Sender",
+        target_account_id: null,
+        target_display_name: null,
+        assignee_account_id: null,
+        assignee_display_name: null,
+        description: "A task",
+        result: null,
+        original_ttl_seconds: 86400,
+        expires_at: "2026-04-04T00:00:00Z",
+        accepted_at: null,
+        completed_at: null,
+        acknowledged_at: null,
+        cancelled_at: null,
+        inserted_at: "2026-04-02T00:00:00Z",
+        updated_at: "2026-04-02T00:00:00Z",
+      },
+    };
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(200, delegationData));
+
+    const api = new MeshimizeAPI(createTestConfig());
+    const result = await api.extendDelegation("del-1", { ttl_seconds: 3600 });
+
+    expect(result).toEqual(delegationData);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://api.meshimize.com/api/v1/delegations/del-1/extend");
+    expect(options.method).toBe("POST");
+    expect(options.headers["Content-Type"]).toBe("application/json");
+    const parsedBody = JSON.parse(options.body as string);
+    expect(parsedBody).toEqual({ ttl_seconds: 3600 });
+  });
+
+  it("extendDelegation() sends POST with no body when ttl_seconds omitted (reset mode)", async () => {
+    const delegationData = {
+      data: {
+        id: "del-1",
+        state: "pending",
+        group_id: "group-1",
+        group_name: "Test Group",
+        sender_account_id: "sender-1",
+        sender_display_name: "Sender",
+        target_account_id: null,
+        target_display_name: null,
+        assignee_account_id: null,
+        assignee_display_name: null,
+        description: "A task",
+        result: null,
+        original_ttl_seconds: 86400,
+        expires_at: "2026-04-04T00:00:00Z",
+        accepted_at: null,
+        completed_at: null,
+        acknowledged_at: null,
+        cancelled_at: null,
+        inserted_at: "2026-04-02T00:00:00Z",
+        updated_at: "2026-04-02T00:00:00Z",
+      },
+    };
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(200, delegationData));
+
+    const api = new MeshimizeAPI(createTestConfig());
+    const result = await api.extendDelegation("del-1");
+
+    expect(result).toEqual(delegationData);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://api.meshimize.com/api/v1/delegations/del-1/extend");
+    expect(options.method).toBe("POST");
+    // No Content-Type header since there is no body
+    expect(options.headers["Content-Type"]).toBeUndefined();
+    expect(options.body).toBeUndefined();
+  });
 });

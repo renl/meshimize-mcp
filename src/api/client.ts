@@ -7,13 +7,7 @@ import type {
   DirectMessageDataResponse,
   DirectMessageMetadataResponse,
 } from "../types/messages.js";
-import type {
-  DelegationMetadataResponse,
-  DelegationCreateResponse,
-  DelegationCompleteResponse,
-  DelegationState,
-  DelegationRoleFilter,
-} from "../types/delegations.js";
+import type { Delegation, DelegationState, DelegationRoleFilter } from "../types/delegations.js";
 
 export class MeshimizeAPIError extends Error {
   public readonly status: number;
@@ -238,7 +232,7 @@ export class MeshimizeAPI {
     description: string;
     target_account_id?: string;
     ttl_seconds?: number;
-  }): Promise<{ data: DelegationCreateResponse }> {
+  }): Promise<{ data: Delegation }> {
     return this.request("POST", "/delegations", body);
   }
 
@@ -248,7 +242,7 @@ export class MeshimizeAPI {
     role?: DelegationRoleFilter;
     limit?: number;
     after?: string;
-  }): Promise<PaginatedResponse<DelegationMetadataResponse>> {
+  }): Promise<PaginatedResponse<Delegation>> {
     const qs = new URLSearchParams();
     if (params?.group_id) qs.set("group_id", params.group_id);
     if (params?.state) qs.set("state", params.state);
@@ -259,22 +253,30 @@ export class MeshimizeAPI {
     return this.request("GET", `/delegations${query ? `?${query}` : ""}`);
   }
 
-  async getDelegation(id: string): Promise<{ data: DelegationMetadataResponse }> {
+  async getDelegation(id: string): Promise<{ data: Delegation }> {
     return this.request("GET", `/delegations/${id}`);
   }
 
-  async acceptDelegation(id: string): Promise<{ data: DelegationMetadataResponse }> {
+  async acceptDelegation(id: string): Promise<{ data: Delegation }> {
     return this.request("POST", `/delegations/${id}/accept`);
   }
 
-  async completeDelegation(
-    id: string,
-    body: { result: string },
-  ): Promise<{ data: DelegationCompleteResponse }> {
+  async completeDelegation(id: string, body: { result: string }): Promise<{ data: Delegation }> {
     return this.request("POST", `/delegations/${id}/complete`, body);
   }
 
-  async cancelDelegation(id: string): Promise<{ data: DelegationMetadataResponse }> {
+  async cancelDelegation(id: string): Promise<{ data: Delegation }> {
     return this.request("POST", `/delegations/${id}/cancel`);
+  }
+
+  async acknowledgeDelegation(id: string): Promise<{ data: Delegation }> {
+    return this.request("POST", `/delegations/${id}/acknowledge`);
+  }
+
+  async extendDelegation(
+    id: string,
+    body?: { ttl_seconds: number },
+  ): Promise<{ data: Delegation }> {
+    return this.request("POST", `/delegations/${id}/extend`, body);
   }
 }

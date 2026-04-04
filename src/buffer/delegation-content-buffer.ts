@@ -1,8 +1,10 @@
 /**
- * DelegationContentBuffer — In-memory bounded store for transient delegation content (SQ-14).
+ * DelegationContentBuffer — Supplementary cache for delegation content.
+ * Server is the primary source; buffer provides fallback enrichment.
  *
  * Stores `description` (from create) and `result` (from complete) keyed by delegation ID.
- * Content is never persisted — it exists in memory only for the current session.
+ * Content is cached in memory for the current session as a fallback when the server
+ * returns null for content fields (e.g., stale read, content not yet reflected).
  *
  * Eviction policy: Least Recently Written — entries are ordered by their last write
  * (storeDescription / storeResult). Reads via `get()` do not promote entries.
