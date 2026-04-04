@@ -347,7 +347,7 @@ export function registerCancelDelegation(server: McpServer, deps: ToolDependenci
 export function registerAcknowledgeDelegation(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "acknowledge_delegation",
-    "Acknowledge a completed delegation. Only the sender can call. Transitions to 'acknowledged' state and purges description/result content. Unsubscribes from real-time updates and clears local content buffer for this delegation.",
+    "Acknowledge a completed delegation. Only the sender can call. Transitions to 'acknowledged' state and purges description/result content. Clears the local content buffer for this delegation.",
     {
       delegation_id: z.string().uuid().describe("The UUID of the delegation to acknowledge"),
     },

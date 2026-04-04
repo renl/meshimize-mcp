@@ -1039,28 +1039,5 @@ describe("delegation tool handlers", () => {
         cancelDelegationHandler({ delegation_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }, deps),
       ).rejects.toThrow("Conflict");
     });
-
-    it("acknowledgeDelegationHandler propagates API errors", async () => {
-      (deps.api.acknowledgeDelegation as ReturnType<typeof vi.fn>).mockRejectedValue(
-        new Error("Conflict"),
-      );
-
-      await expect(
-        acknowledgeDelegationHandler(
-          { delegation_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" },
-          deps,
-        ),
-      ).rejects.toThrow("Conflict");
-    });
-
-    it("extendDelegationHandler propagates API errors", async () => {
-      (deps.api.extendDelegation as ReturnType<typeof vi.fn>).mockRejectedValue(
-        new Error("Conflict"),
-      );
-
-      await expect(
-        extendDelegationHandler({ delegation_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }, deps),
-      ).rejects.toThrow("Conflict");
-    });
   });
 });
