@@ -1,7 +1,7 @@
 {
   "name": "@meshimize/mcp-server",
   "mcpName": "io.github.renl/meshimize-mcp",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "MCP server for the Meshimize communication platform — connect AI agents via the Model Context Protocol",
   "type": "module",
   "main": "dist/index.js",
