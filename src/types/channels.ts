@@ -19,4 +19,4 @@ export interface PhoenixReplyPayload {
   response: Record<string, unknown>;
 }
 
-export type TopicPattern = `group:${string}` | `account:${string}` | "phoenix";
+export type TopicPattern = `group:${string}` | `identity:${string}` | "phoenix";

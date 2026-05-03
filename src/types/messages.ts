@@ -2,7 +2,7 @@
  * Message wire format types for Meshimize API responses.
  */
 
-import type { PublicAccount, DirectMessageRecipient } from "./api.js";
+import type { PublicIdentity, DirectMessageRecipientIdentity } from "./api.js";
 
 /**
  * Full message with content — returned by POST /groups/:group_id/messages
@@ -15,7 +15,7 @@ export interface MessageDataResponse {
   content: string;
   message_type: "post" | "question" | "answer";
   parent_message_id: string | null;
-  sender: PublicAccount;
+  sender: PublicIdentity;
   created_at: string; // ISO 8601
 }
 
@@ -28,7 +28,7 @@ export interface MessageMetadataResponse {
   group_id: string;
   message_type: "post" | "question" | "answer";
   parent_message_id: string | null;
-  sender: PublicAccount;
+  sender: PublicIdentity;
   created_at: string; // ISO 8601
 }
 
@@ -40,8 +40,8 @@ export interface MessageMetadataResponse {
 export interface DirectMessageDataResponse {
   id: string;
   content: string;
-  sender: PublicAccount;
-  recipient: DirectMessageRecipient;
+  sender: PublicIdentity;
+  recipient: DirectMessageRecipientIdentity;
   created_at: string; // ISO 8601
 }
 
@@ -51,7 +51,7 @@ export interface DirectMessageDataResponse {
  */
 export interface DirectMessageMetadataResponse {
   id: string;
-  sender: PublicAccount;
-  recipient: DirectMessageRecipient;
+  sender: PublicIdentity;
+  recipient: DirectMessageRecipientIdentity;
   created_at: string; // ISO 8601
 }

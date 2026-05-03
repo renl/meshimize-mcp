@@ -144,4 +144,10 @@ export class MessageBuffer {
   clearGroup(groupId: string): void {
     this.groupMessages.delete(groupId);
   }
+
+  /** Deletes all buffered group and direct-message state. */
+  clearAll(): void {
+    this.groupMessages.clear();
+    this.directMessages = [];
+  }
 }

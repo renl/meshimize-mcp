@@ -84,7 +84,6 @@ export class MeshimizeAPI {
         return response.json() as Promise<T>;
       }
 
-      // Parse error body
       let errorBody: unknown;
       try {
         errorBody = await response.json();
@@ -92,7 +91,6 @@ export class MeshimizeAPI {
         errorBody = { error: `HTTP ${response.status}` };
       }
 
-      // Handle 429 with retry (if attempts remain)
       if (response.status === 429 && attempt < maxAttempts - 1) {
         const retryAfter = response.headers.get("Retry-After");
         const baseDelay = 1000;
@@ -100,7 +98,6 @@ export class MeshimizeAPI {
         let delayMs: number;
 
         if (retryAfter) {
-          // Retry-After can be either seconds or an HTTP-date; handle both safely.
           const seconds = Number(retryAfter);
           if (Number.isFinite(seconds) && seconds >= 0) {
             delayMs = Math.min(seconds * 1000, maxDelay);
@@ -110,12 +107,10 @@ export class MeshimizeAPI {
               const diff = retryTimestamp - Date.now();
               delayMs = diff > 0 ? Math.min(diff, maxDelay) : 0;
             } else {
-              // Malformed Retry-After header: fall back to exponential backoff with jitter.
               delayMs = Math.min(baseDelay * Math.pow(2, attempt) + Math.random() * 1000, maxDelay);
             }
           }
         } else {
-          // Exponential backoff with jitter: min(base * 2^attempt + random(0, 1000ms), 30s)
           delayMs = Math.min(baseDelay * Math.pow(2, attempt) + Math.random() * 1000, maxDelay);
         }
 
@@ -123,20 +118,16 @@ export class MeshimizeAPI {
         continue;
       }
 
-      // Non-retryable error or retries exhausted
       throw new MeshimizeAPIError(response.status, errorBody);
     }
 
-    // Unreachable — loop always throws or returns, but TypeScript needs this
     throw new Error("Unexpected end of retry loop");
   }
 
-  // --- Account ---
   async getAccount(): Promise<{ data: AccountResponse }> {
     return this.request("GET", "/account");
   }
 
-  // --- Groups ---
   async searchGroups(params?: {
     q?: string;
     type?: string;
@@ -171,7 +162,6 @@ export class MeshimizeAPI {
     return this.request("DELETE", `/groups/${groupId}/leave`);
   }
 
-  // --- Messages ---
   async getMessages(
     groupId: string,
     params?: {
@@ -200,11 +190,9 @@ export class MeshimizeAPI {
       parent_message_id?: string | null;
     },
   ): Promise<{ data: MessageDataResponse }> {
-    // Flat params — body goes directly, NOT nested under "message" key
     return this.request("POST", `/groups/${groupId}/messages`, body);
   }
 
-  // --- Direct Messages ---
   async getDirectMessages(params?: {
     limit?: number;
     after?: string;
@@ -217,20 +205,16 @@ export class MeshimizeAPI {
   }
 
   async sendDirectMessage(body: {
-    recipient_account_id: string;
+    recipient_identity_id: string;
     content: string;
   }): Promise<{ data: DirectMessageDataResponse }> {
-    // Flat params — body goes directly, NOT nested under "direct_message" key
-    // Field is "recipient_account_id" (NOT "recipient_id")
     return this.request("POST", "/direct-messages", body);
   }
-
-  // --- Delegations ---
 
   async createDelegation(body: {
     group_id: string;
     description: string;
-    target_account_id?: string;
+    target_identity_id?: string;
     ttl_seconds?: number;
   }): Promise<{ data: Delegation }> {
     return this.request("POST", "/delegations", body);

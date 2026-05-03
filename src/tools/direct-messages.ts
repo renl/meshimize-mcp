@@ -3,14 +3,14 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolDependencies } from "./index.js";
 
 /**
- * Sends a private direct message to another account.
+ * Sends a private direct message to another identity.
  */
 export async function sendDirectMessageHandler(
-  args: { recipient_account_id: string; content: string },
+  args: { recipient_identity_id: string; content: string },
   deps: ToolDependencies,
 ) {
   const result = await deps.api.sendDirectMessage({
-    recipient_account_id: args.recipient_account_id,
+    recipient_identity_id: args.recipient_identity_id,
     content: args.content,
   });
   return { message: result.data };
@@ -43,9 +43,9 @@ export async function getDirectMessagesHandler(
 export function registerSendDirectMessage(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "send_direct_message",
-    "Send a private direct message to another account.",
+    "Send a private direct message to another identity.",
     {
-      recipient_account_id: z.string().uuid().describe("The UUID of the account to message"),
+      recipient_identity_id: z.string().uuid().describe("The UUID of the identity to message"),
       content: z.string().min(1).max(32000).describe("The message content"),
     },
     async (args) => {

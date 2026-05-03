@@ -24,11 +24,11 @@ export interface Delegation {
   state: DelegationState;
   group_id: string; // UUID
   group_name: string;
-  sender_account_id: string; // UUID
+  sender_identity_id: string; // UUID
   sender_display_name: string;
-  target_account_id: string | null; // UUID | null
+  target_identity_id: string | null; // UUID | null
   target_display_name: string | null;
-  assignee_account_id: string | null; // UUID | null
+  assignee_identity_id: string | null; // UUID | null
   assignee_display_name: string | null;
   description: string | null; // null when purged (after acknowledge/expire)
   result: string | null; // null when purged or not yet completed

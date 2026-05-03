@@ -4,22 +4,12 @@ import type { ToolDependencies } from "./index.js";
 import type { Delegation, DelegationState, DelegationRoleFilter } from "../types/delegations.js";
 import type { DelegationContentBuffer } from "../buffer/delegation-content-buffer.js";
 
-/** States where content has been intentionally purged server-side. */
 const PURGED_STATES: ReadonlySet<DelegationState> = new Set<DelegationState>([
   "acknowledged",
   "expired",
 ]);
 
-/**
- * Enriches a delegation with content from the local buffer as fallback.
- * Server-provided content is primary. Buffer content used only when server returns null
- * and buffer has a cached value (e.g., stale read, or content not yet reflected).
- *
- * For delegations in purged states (acknowledged, expired), buffer fallback is skipped
- * and any stale buffer entry is evicted to prevent re-exposing purged content.
- */
 function enrichWithBuffer(delegation: Delegation, buffer: DelegationContentBuffer): Delegation {
-  // Never re-attach purged content — evict stale buffer entries for terminal-purged states
   if (PURGED_STATES.has(delegation.state)) {
     buffer.delete(delegation.id);
     return delegation;
@@ -28,21 +18,17 @@ function enrichWithBuffer(delegation: Delegation, buffer: DelegationContentBuffe
   if (!content) return delegation;
   return {
     ...delegation,
-    // Only use buffer content as fallback when server returns null
     description:
       delegation.description === null ? (content.description ?? null) : delegation.description,
     result: delegation.result === null ? (content.result ?? null) : delegation.result,
   };
 }
 
-/**
- * Creates a new delegation in a group.
- */
 export async function createDelegationHandler(
   args: {
     group_id: string;
     description: string;
-    target_account_id?: string;
+    target_identity_id?: string;
     ttl_seconds?: number;
   },
   deps: ToolDependencies,
@@ -50,14 +36,14 @@ export async function createDelegationHandler(
   const body: {
     group_id: string;
     description: string;
-    target_account_id?: string;
+    target_identity_id?: string;
     ttl_seconds?: number;
   } = {
     group_id: args.group_id,
     description: args.description,
   };
-  if (args.target_account_id !== undefined) {
-    body.target_account_id = args.target_account_id;
+  if (args.target_identity_id !== undefined) {
+    body.target_identity_id = args.target_identity_id;
   }
   if (args.ttl_seconds !== undefined) {
     body.ttl_seconds = args.ttl_seconds;
@@ -70,9 +56,6 @@ export async function createDelegationHandler(
   return { delegation: result.data };
 }
 
-/**
- * Lists delegations with optional filters. Enriches with local buffer content as fallback.
- */
 export async function listDelegationsHandler(
   args: {
     group_id?: string;
@@ -95,9 +78,6 @@ export async function listDelegationsHandler(
   return { delegations: enriched, meta: result.meta };
 }
 
-/**
- * Gets a single delegation by ID. Enriches with local buffer content as fallback.
- */
 export async function getDelegationHandler(
   args: { delegation_id: string },
   deps: ToolDependencies,
@@ -107,9 +87,6 @@ export async function getDelegationHandler(
   return { delegation: enriched };
 }
 
-/**
- * Accepts a pending delegation.
- */
 export async function acceptDelegationHandler(
   args: { delegation_id: string },
   deps: ToolDependencies,
@@ -118,9 +95,6 @@ export async function acceptDelegationHandler(
   return { delegation: result.data };
 }
 
-/**
- * Completes an accepted delegation with a result.
- */
 export async function completeDelegationHandler(
   args: { delegation_id: string; result: string },
   deps: ToolDependencies,
@@ -134,9 +108,6 @@ export async function completeDelegationHandler(
   return { delegation: apiResult.data };
 }
 
-/**
- * Cancels a delegation.
- */
 export async function cancelDelegationHandler(
   args: { delegation_id: string },
   deps: ToolDependencies,
@@ -145,22 +116,15 @@ export async function cancelDelegationHandler(
   return { delegation: result.data };
 }
 
-/**
- * Acknowledges a completed delegation. Purges content and evicts from local buffer.
- */
 export async function acknowledgeDelegationHandler(
   args: { delegation_id: string },
   deps: ToolDependencies,
 ) {
   const result = await deps.api.acknowledgeDelegation(args.delegation_id);
-  // Content is purged on acknowledge — evict from local buffer
   deps.delegationBuffer.delete(result.data.id);
   return { delegation: result.data };
 }
 
-/**
- * Extends the TTL of a delegation.
- */
 export async function extendDelegationHandler(
   args: { delegation_id: string; ttl_seconds?: number },
   deps: ToolDependencies,
@@ -170,12 +134,10 @@ export async function extendDelegationHandler(
   return { delegation: result.data };
 }
 
-// --- Registration functions ---
-
 export function registerCreateDelegation(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "create_delegation",
-    "Create a new delegation in a group. The sender is automatically set to the authenticated account. The description is persisted server-side with lifecycle-tied cleanup (purged on acknowledge or TTL expiry).",
+    "Create a new delegation in a group. The sender is automatically set to the authenticated identity. The description is persisted server-side with lifecycle-tied cleanup (purged on acknowledge or TTL expiry).",
     {
       group_id: z.string().uuid().describe("The UUID of the group"),
       description: z
@@ -185,18 +147,18 @@ export function registerCreateDelegation(server: McpServer, deps: ToolDependenci
         .describe(
           "Description of the delegated task (persisted server-side; purged on acknowledge or TTL expiry)",
         ),
-      target_account_id: z
+      target_identity_id: z
         .string()
         .uuid()
         .optional()
-        .describe("Optional UUID of the target account to assign the delegation to"),
+        .describe("Optional UUID of the target identity to assign the delegation to"),
       ttl_seconds: z
         .number()
         .int()
         .min(300)
         .max(604800)
         .optional()
-        .describe("Time-to-live in seconds (300\u2013604800). Defaults to server setting."),
+        .describe("Time-to-live in seconds (300–604800). Defaults to server setting."),
     },
     async (args) => {
       try {
@@ -228,7 +190,7 @@ export function registerListDelegations(server: McpServer, deps: ToolDependencie
       role: z
         .enum(["sender", "assignee", "available"])
         .optional()
-        .describe("Filter by role relative to the authenticated account"),
+        .describe("Filter by role relative to the authenticated identity"),
       limit: z
         .number()
         .int()
@@ -283,7 +245,7 @@ export function registerGetDelegation(server: McpServer, deps: ToolDependencies)
 export function registerAcceptDelegation(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "accept_delegation",
-    "Accept a pending delegation. Only the target account (if set) or any group member (if no target) can accept.",
+    "Accept a pending delegation. Only the target identity (if set) or any group member (if no target) can accept.",
     {
       delegation_id: z.string().uuid().describe("The UUID of the delegation to accept"),
     },
@@ -396,7 +358,7 @@ export function registerExtendDelegation(server: McpServer, deps: ToolDependenci
         .max(604800)
         .optional()
         .describe(
-          "Seconds to add to current expires_at (300\u2013604800). If omitted, resets to now + original_ttl_seconds.",
+          "Seconds to add to current expires_at (300–604800). If omitted, resets to now + original_ttl_seconds.",
         ),
     },
     async (args) => {
@@ -416,9 +378,6 @@ export function registerExtendDelegation(server: McpServer, deps: ToolDependenci
   );
 }
 
-/**
- * Registers all 8 delegation MCP tool handlers on the server.
- */
 export function registerDelegationTools(server: McpServer, deps: ToolDependencies): void {
   registerCreateDelegation(server, deps);
   registerListDelegations(server, deps);

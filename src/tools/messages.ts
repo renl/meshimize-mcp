@@ -28,7 +28,7 @@ function buildProvenance(
     membership_path: membershipPath,
     group_id: group.id,
     group_name: group.name,
-    provider_account_id: group.owner.id,
+    provider_identity_id: group.owner.id,
     provider_display_name: group.owner.display_name,
     provider_verified: group.owner.verified,
   };
@@ -46,10 +46,6 @@ function buildLateAnswerRecovery(groupId: string, questionId: string): LateAnswe
   };
 }
 
-/**
- * Retrieves recent messages from a group. Reads from local buffer first (includes
- * full content). Falls back to server API which returns metadata only (no message content).
- */
 export async function getMessagesHandler(
   args: { group_id: string; after_message_id?: string; limit?: number },
   deps: ToolDependencies,
@@ -72,9 +68,6 @@ export async function getMessagesHandler(
   return { messages: result.data, source: "api" as const, has_more: result.meta.has_more };
 }
 
-/**
- * Sends a message to a group.
- */
 export async function postMessageHandler(
   args: {
     group_id: string;
@@ -92,9 +85,6 @@ export async function postMessageHandler(
   return { message: result.data };
 }
 
-/**
- * Posts a question to a Q&A group and waits for an answer via the local buffer.
- */
 export async function askQuestionHandler(
   args: { group_id: string; question: string; timeout_seconds?: number },
   deps: ToolDependencies,
@@ -132,7 +122,6 @@ export async function askQuestionHandler(
   deps.authoritySessionContext.clearGroup(args.group_id);
 
   const questionId = questionResult.data.id;
-
   const timeoutMs = timeoutSeconds * 1000;
   const startTime = Date.now();
 
@@ -158,7 +147,7 @@ export async function askQuestionHandler(
         answer: {
           id: answer.id,
           content: answer.content,
-          responder_account_id: answer.sender.id,
+          responder_identity_id: answer.sender.id,
           responder_display_name: answer.sender.display_name,
           responder_verified: answer.sender.verified,
           created_at: answer.created_at,
@@ -200,10 +189,6 @@ export async function askQuestionHandler(
   return result;
 }
 
-/**
- * Retrieves unanswered questions from Q&A groups where you are an owner or responder.
- * Reads from local buffer (includes content). Falls back to server API (metadata only).
- */
 export async function getPendingQuestionsHandler(
   args: { group_id?: string; limit?: number },
   deps: ToolDependencies,
@@ -265,7 +250,7 @@ export function registerGetMessages(server: McpServer, deps: ToolDependencies): 
         .string()
         .uuid()
         .optional()
-        .describe("Return messages after this message ID (for pagination)"),
+        .describe("Return messages after this message ID"),
       limit: z
         .number()
         .int()
@@ -295,9 +280,9 @@ export function registerGetMessages(server: McpServer, deps: ToolDependencies): 
 export function registerPostMessage(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "post_message",
-    "Send a message to a group. Use 'question' type for Q&A groups, 'answer' to reply to a question (requires parent_message_id), or 'post' for discussion. Check `list_my_groups` first to confirm membership before posting.",
+    "Send a message to a group (`post`, `question`, or `answer` type).",
     {
-      group_id: z.string().uuid().describe("The UUID of the group to post to"),
+      group_id: z.string().uuid().describe("The UUID of the group"),
       content: z.string().min(1).max(32000).describe("The message content"),
       message_type: z.enum(["post", "question", "answer"]).describe("Type of message"),
       parent_message_id: z
@@ -336,10 +321,7 @@ export function registerAskQuestion(server: McpServer, deps: ToolDependencies): 
         .min(90)
         .max(300)
         .optional()
-        .default(90)
-        .describe(
-          "How long to wait for an answer (seconds). Minimum 90s to allow provider RAG pipelines time to respond.",
-        ),
+        .describe("How long to wait for an answer (seconds)"),
     },
     async (args) => {
       try {

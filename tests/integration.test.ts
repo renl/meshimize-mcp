@@ -86,8 +86,11 @@ describeIntegration("Integration Tests", () => {
 
     expect(account.id).toBeDefined();
     expect(typeof account.id).toBe("string");
-    expect(account.display_name).toBeDefined();
-    expect(typeof account.display_name).toBe("string");
+    expect(account.current_identity.id).toBeDefined();
+    expect(typeof account.current_identity.id).toBe("string");
+    expect(account.current_identity.display_name).toBeDefined();
+    expect(typeof account.current_identity.display_name).toBe("string");
+    expect(typeof account.current_identity.is_default).toBe("boolean");
     expect(account.email).toBeDefined();
     expect(typeof account.email).toBe("string");
   }, 15000);
@@ -156,8 +159,8 @@ describeIntegration("Integration Tests", () => {
     await socket.connect();
 
     const { data: account } = await api.getAccount();
-    const accountChannel = socket.channel(`account:${account.id}`);
-    await accountChannel.join();
+    const identityChannel = socket.channel(`identity:${account.current_identity.id}`);
+    await identityChannel.join();
     const groupChannel = socket.channel(`group:${groupId}`);
     await groupChannel.join();
 
@@ -178,7 +181,7 @@ describeIntegration("Integration Tests", () => {
 
     if (result.answered) {
       expect(result.answer.content.length).toBeGreaterThan(0);
-      expect(result.answer.responder_account_id).toBeDefined();
+      expect(result.answer.responder_identity_id).toBeDefined();
       expect(result.authority_continuation).toMatchObject({
         state: "completed",
         scope: "group",
