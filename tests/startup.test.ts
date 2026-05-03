@@ -7,6 +7,7 @@ interface MockChannel {
   leave: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
+  resetState: ReturnType<typeof vi.fn>;
   getState: ReturnType<typeof vi.fn>;
   trigger: (event: string, payload: unknown) => void;
   _handlers: Map<string, Array<(payload: unknown) => void>>;
@@ -29,6 +30,7 @@ function createMockChannel(): MockChannel {
         if (idx !== -1) list.splice(idx, 1);
       }
     }),
+    resetState: vi.fn(),
     getState: vi.fn().mockReturnValue("joined"),
     trigger(event: string, payload: unknown) {
       const list = handlers.get(event) ?? [];

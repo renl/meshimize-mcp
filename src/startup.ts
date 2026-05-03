@@ -175,6 +175,7 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
       await setupGroupChannel(group.id);
     } catch (err) {
       if (isNotAMemberInitialGroupJoinFailure(err, group.id)) {
+        socket.channel(`group:${group.id}`).resetState();
         console.error(
           `[meshimize-mcp] Startup membership mismatch: getMyGroups returned group:${group.id}, but channel join was rejected with reason="not_a_member". Skipping group subscription.`,
         );
