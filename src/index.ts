@@ -46,10 +46,10 @@ async function main(): Promise<void> {
   const membershipPaths = createMembershipPathMap();
 
   // 3. Run startup orchestration (authenticate, connect WS, join channels)
-  await startOrchestration({ api, socket, buffer });
+  const startup = await startOrchestration({ api, socket, buffer });
 
   // 4. Create and start MCP server
-  const server = new McpServer({ name: "meshimize-mcp", version: "0.1.0" });
+  const server = new McpServer({ name: "meshimize-mcp", version: "0.1.18" });
   registerTools(server, {
     api,
     socket,
@@ -64,7 +64,10 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("[meshimize-mcp] MCP server ready — listening on stdio");
+  console.error(
+    `[meshimize-mcp] MCP server ready — listening on stdio for account ${startup.accountDisplayName}, ` +
+      `acting identity ${startup.actingIdentityDisplayName} (${startup.currentIdentityId})`,
+  );
 }
 
 main().catch((err: unknown) => {

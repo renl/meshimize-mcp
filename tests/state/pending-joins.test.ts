@@ -55,7 +55,7 @@ describe("PendingJoinMap", () => {
       expect(request.group_name).toBe(group.name);
       expect(request.group_type).toBe(group.type);
       expect(request.group_description).toBe(group.description);
-      expect(request.owner_account_id).toBe(group.owner.id);
+      expect(request.owner_identity_id).toBe(group.owner.id);
       expect(request.owner_display_name).toBe(group.owner.display_name);
       expect(request.owner_verified).toBe(group.owner.verified);
       expect(request.created_at).toBeDefined();

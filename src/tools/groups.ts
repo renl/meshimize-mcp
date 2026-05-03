@@ -209,7 +209,7 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
  * Completes a pending join after operator approval.
  * This is the ONLY path that calls POST /groups/:group_id/join.
  * Does NOT make any WebSocket calls — channel subscription is automatic
- * via the account channel's group_joined event handler.
+ * via the identity channel's group_joined event handler.
  */
 export async function approveJoinHandler(args: { group_id: string }, deps: ToolDependencies) {
   if (!deps.pendingJoins.getByGroupId(args.group_id)) {
@@ -310,7 +310,7 @@ export async function leaveGroupHandler(args: { group_id: string }, deps: ToolDe
 }
 
 /**
- * Lists all groups the current account is a member of.
+ * Lists all groups the current identity is a member of.
  */
 export async function listMyGroupsHandler(_args: Record<string, never>, deps: ToolDependencies) {
   const result = await deps.api.getMyGroups({ limit: 100 });

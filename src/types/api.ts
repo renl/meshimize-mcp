@@ -2,18 +2,18 @@
  * Shared wire format types for Meshimize API responses.
  */
 
-/** Public-facing account data (no email, no description). */
-export interface PublicAccount {
+/** Public-facing identity data (no email, no description). */
+export interface PublicIdentity {
   id: string;
   display_name: string;
   verified: boolean;
 }
 
 /**
- * Direct message recipient — intentionally different from PublicAccount.
+ * Direct message recipient identity — intentionally different from PublicIdentity.
  * Recipient does NOT include `verified` field.
  */
-export interface DirectMessageRecipient {
+export interface DirectMessageRecipientIdentity {
   id: string;
   display_name: string;
   // No `verified` field — intentional asymmetry (sender has verified, recipient does not)
@@ -32,14 +32,21 @@ export interface PaginatedResponse<T> {
   meta: PaginationMeta;
 }
 
+export interface CurrentIdentityResponse {
+  id: string;
+  display_name: string;
+  is_default: boolean;
+}
+
 /** Account data (inner `data` object from GET /api/v1/account response). */
 export interface AccountResponse {
   id: string;
   email: string;
   display_name: string;
   description: string | null;
-  allow_direct_connections: boolean;
   verified: boolean;
+  current_identity: CurrentIdentityResponse | null;
+  inserted_at: string; // ISO 8601
   created_at: string; // ISO 8601
   updated_at: string; // ISO 8601
 }

@@ -66,7 +66,7 @@ class PendingJoinMapImpl implements PendingJoinMap {
       group_name: group.name,
       group_type: group.type,
       group_description: group.description,
-      owner_account_id: group.owner.id,
+      owner_identity_id: group.owner.id,
       owner_display_name: group.owner.display_name,
       owner_verified: group.owner.verified,
       created_at: new Date(now).toISOString(),

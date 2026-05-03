@@ -41,11 +41,11 @@ function makeDelegation(overrides: Partial<Delegation> = {}): Delegation {
     state: overrides.state ?? "pending",
     group_id: overrides.group_id ?? "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
     group_name: overrides.group_name ?? "Test Group",
-    sender_account_id: overrides.sender_account_id ?? "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    sender_identity_id: overrides.sender_identity_id ?? "cccccccc-cccc-cccc-cccc-cccccccccccc",
     sender_display_name: overrides.sender_display_name ?? "Sender Agent",
-    target_account_id: overrides.target_account_id ?? null,
+    target_identity_id: overrides.target_identity_id ?? null,
     target_display_name: overrides.target_display_name ?? null,
-    assignee_account_id: overrides.assignee_account_id ?? null,
+    assignee_identity_id: overrides.assignee_identity_id ?? null,
     assignee_display_name: overrides.assignee_display_name ?? null,
     description: overrides.description ?? null,
     result: overrides.result ?? null,
@@ -139,9 +139,9 @@ describe("delegation tool handlers", () => {
       });
     });
 
-    it("passes optional target_account_id and ttl_seconds", async () => {
+    it("passes optional target_identity_id and ttl_seconds", async () => {
       const delegation = makeDelegation({
-        target_account_id: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+        target_identity_id: "dddddddd-dddd-dddd-dddd-dddddddddddd",
         target_display_name: "Target Agent",
         description: "Targeted task",
       });
@@ -154,7 +154,7 @@ describe("delegation tool handlers", () => {
         {
           group_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
           description: "Targeted task",
-          target_account_id: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+          target_identity_id: "dddddddd-dddd-dddd-dddd-dddddddddddd",
           ttl_seconds: 3600,
         },
         deps,
@@ -163,7 +163,7 @@ describe("delegation tool handlers", () => {
       expect(deps.api.createDelegation).toHaveBeenCalledWith({
         group_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
         description: "Targeted task",
-        target_account_id: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+        target_identity_id: "dddddddd-dddd-dddd-dddd-dddddddddddd",
         ttl_seconds: 3600,
       });
     });
@@ -183,7 +183,7 @@ describe("delegation tool handlers", () => {
       );
 
       const calledWith = (deps.api.createDelegation as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(calledWith).not.toHaveProperty("target_account_id");
+      expect(calledWith).not.toHaveProperty("target_identity_id");
       expect(calledWith).not.toHaveProperty("ttl_seconds");
     });
 
@@ -458,7 +458,7 @@ describe("delegation tool handlers", () => {
     it("calls API and returns delegation", async () => {
       const delegation = makeDelegation({
         state: "accepted",
-        assignee_account_id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+        assignee_identity_id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
         assignee_display_name: "Assignee Agent",
         accepted_at: "2026-04-02T01:00:00Z",
       });
@@ -928,11 +928,11 @@ describe("delegation tool handlers", () => {
       expect(d).toHaveProperty("state");
       expect(d).toHaveProperty("group_id");
       expect(d).toHaveProperty("group_name");
-      expect(d).toHaveProperty("sender_account_id");
+      expect(d).toHaveProperty("sender_identity_id");
       expect(d).toHaveProperty("sender_display_name");
-      expect(d).toHaveProperty("target_account_id");
+      expect(d).toHaveProperty("target_identity_id");
       expect(d).toHaveProperty("target_display_name");
-      expect(d).toHaveProperty("assignee_account_id");
+      expect(d).toHaveProperty("assignee_identity_id");
       expect(d).toHaveProperty("assignee_display_name");
       expect(d).toHaveProperty("description");
       expect(d).toHaveProperty("result");

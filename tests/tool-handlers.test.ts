@@ -411,7 +411,7 @@ describe("tool handlers", () => {
     (deps.api.joinGroup as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: {
         group_id: mockGroup.id,
-        account_id: "33333333-3333-3333-3333-333333333333",
+        agent_identity_id: "33333333-3333-3333-3333-333333333333",
         role: "member",
         created_at: "2026-01-01T00:00:00Z",
       },
@@ -720,14 +720,14 @@ describe("tool handlers", () => {
           membership_path: "existing_membership",
           group_id: mockGroup.id,
           group_name: mockGroup.name,
-          provider_account_id: mockGroup.owner.id,
+          provider_identity_id: mockGroup.owner.id,
           provider_display_name: mockGroup.owner.display_name,
           provider_verified: true,
         },
         answer: {
           id: "77777777-7777-7777-7777-777777777777",
           content: "Answer is Y",
-          responder_account_id: "responder",
+          responder_identity_id: "responder",
           responder_display_name: "Responder",
           responder_verified: true,
           created_at: "2026-01-01T00:00:01Z",
@@ -1034,7 +1034,7 @@ describe("tool handlers", () => {
     ]);
 
     const sendResult = await sendDirectMessageHandler(
-      { recipient_account_id: "recipient", content: "Hello there" },
+      { recipient_identity_id: "recipient", content: "Hello there" },
       deps,
     );
     const readResult = await getDirectMessagesHandler({ limit: 50 }, deps);

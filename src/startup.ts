@@ -11,37 +11,85 @@ import type { Channel } from "./ws/channel.js";
 import type { MessageBuffer } from "./buffer/message-buffer.js";
 import type { MessageDataResponse, DirectMessageDataResponse } from "./types/messages.js";
 import type { GroupResponse } from "./types/groups.js";
-import type { PaginatedResponse } from "./types/api.js";
+import type { AccountResponse, CurrentIdentityResponse, PaginatedResponse } from "./types/api.js";
 
 export interface StartupResult {
-  accountId: string;
-  displayName: string;
+  currentIdentityId: string;
+  actingIdentityDisplayName: string;
+  actingIdentityIsDefault: boolean;
+  accountDisplayName: string;
   joinedGroups: ReadonlySet<string>;
 }
 
 export interface StartupDeps {
   api: Pick<MeshimizeAPI, "getAccount" | "getMyGroups">;
   socket: Pick<PhoenixSocket, "connect" | "channel">;
-  buffer: Pick<MessageBuffer, "addGroupMessage" | "addDirectMessage" | "clearGroup">;
+  buffer: Pick<MessageBuffer, "addGroupMessage" | "addDirectMessage" | "clearAll" | "clearGroup">;
+}
+
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isNotAMemberInitialGroupJoinFailure(err: unknown, groupId: string): boolean {
+  const message = getErrorMessage(err);
+
+  return (
+    message.includes(`Channel join failed for topic "group:${groupId}"`) &&
+    message.includes('reason="not_a_member"')
+  );
+}
+
+function requireCurrentIdentity(account: AccountResponse): CurrentIdentityResponse {
+  const currentIdentity = account.current_identity;
+
+  if (
+    !currentIdentity ||
+    typeof currentIdentity.id !== "string" ||
+    currentIdentity.id.length === 0 ||
+    typeof currentIdentity.display_name !== "string" ||
+    currentIdentity.display_name.length === 0 ||
+    typeof currentIdentity.is_default !== "boolean"
+  ) {
+    throw new Error(
+      "Meshimize contract error: GET /api/v1/account returned an invalid current_identity. " +
+        "Each MCP process requires an identity-specific API key and no account-scoped fallback is allowed.",
+    );
+  }
+
+  return currentIdentity;
 }
 
 export async function startOrchestration(deps: StartupDeps): Promise<StartupResult> {
   const { api, socket, buffer } = deps;
 
-  // Verify API key — fail fast if invalid
-  const { data: account } = await api.getAccount();
-  console.error(`[meshimize-mcp] Authenticated as ${account.display_name} (${account.id})`);
+  buffer.clearAll();
 
-  // Connect WebSocket
+  const { data: account } = await api.getAccount();
+  const currentIdentity = requireCurrentIdentity(account);
+
+  console.error(
+    `[meshimize-mcp] Authenticated account container ${account.display_name} (${account.id}); ` +
+      `acting identity ${currentIdentity.display_name} (${currentIdentity.id})` +
+      `${currentIdentity.is_default ? " [default]" : ""}`,
+  );
+
   await socket.connect();
   console.error("[meshimize-mcp] WebSocket connected");
 
-  // Join account channel for direct messages and membership events
-  const accountChannel: Channel = socket.channel(`account:${account.id}`);
-  await accountChannel.join();
-  console.error("[meshimize-mcp] Joined account channel");
+  const identityChannelTopic = `identity:${currentIdentity.id}`;
+  const identityChannel: Channel = socket.channel(identityChannelTopic);
 
-  // Fetch ALL group memberships (paginate until has_more is false)
+  try {
+    await identityChannel.join();
+  } catch (err) {
+    throw new Error(
+      `Failed to join acting identity topic ${identityChannelTopic}: ${getErrorMessage(err)}`,
+    );
+  }
+
+  console.error(`[meshimize-mcp] Joined acting identity topic ${identityChannelTopic}`);
+
   const allGroups: GroupResponse[] = [];
   let cursor: string | undefined;
   do {
@@ -53,11 +101,9 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
     cursor = page.meta.has_more && page.meta.next_cursor ? page.meta.next_cursor : undefined;
   } while (cursor);
 
-  // Track joined groups and their handlers for cleanup
   const joinedGroups = new Set<string>();
   const groupHandlers = new Map<string, (payload: unknown) => void>();
 
-  // Helper: set up a group channel with dedup + handler tracking
   async function setupGroupChannel(groupId: string): Promise<void> {
     if (joinedGroups.has(groupId)) return;
 
@@ -79,7 +125,6 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
     }
   }
 
-  // Helper: handle group_left
   async function handleGroupLeft(groupId: string): Promise<void> {
     if (!joinedGroups.has(groupId)) {
       console.error(`[meshimize-mcp] group_left for unknown group:${groupId} — ignoring`);
@@ -105,17 +150,26 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
     console.error(`[meshimize-mcp] Left group:${groupId}`);
   }
 
-  // Join all initial group channels
   for (const group of allGroups) {
-    await setupGroupChannel(group.id);
+    try {
+      await setupGroupChannel(group.id);
+    } catch (err) {
+      if (isNotAMemberInitialGroupJoinFailure(err, group.id)) {
+        console.error(
+          `[meshimize-mcp] Startup membership mismatch: getMyGroups returned group:${group.id}, but channel join was rejected with reason="not_a_member". Skipping group subscription.`,
+        );
+        continue;
+      }
+
+      throw err;
+    }
   }
 
-  // Wire account channel event handlers
-  accountChannel.on("new_direct_message", (payload: unknown) => {
+  identityChannel.on("new_direct_message", (payload: unknown) => {
     buffer.addDirectMessage(payload as DirectMessageDataResponse);
   });
 
-  accountChannel.on("group_joined", (payload: unknown) => {
+  identityChannel.on("group_joined", (payload: unknown) => {
     const { group_id } = payload as { group_id: string; role: string };
     setupGroupChannel(group_id).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -123,7 +177,7 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
     });
   });
 
-  accountChannel.on("group_left", (payload: unknown) => {
+  identityChannel.on("group_left", (payload: unknown) => {
     const { group_id } = payload as { group_id: string };
     handleGroupLeft(group_id).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -132,8 +186,10 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
   });
 
   return {
-    accountId: account.id,
-    displayName: account.display_name,
+    currentIdentityId: currentIdentity.id,
+    actingIdentityDisplayName: currentIdentity.display_name,
+    actingIdentityIsDefault: currentIdentity.is_default,
+    accountDisplayName: account.display_name,
     joinedGroups,
   };
 }

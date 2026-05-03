@@ -2,19 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { startOrchestration } from "../src/startup.js";
 import type { StartupDeps } from "../src/startup.js";
 
-// ---------------------------------------------------------------------------
-// Mock factories
-// ---------------------------------------------------------------------------
-
 interface MockChannel {
   join: ReturnType<typeof vi.fn>;
   leave: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
   getState: ReturnType<typeof vi.fn>;
-  /** Fire all handlers registered for the given event. */
   trigger: (event: string, payload: unknown) => void;
-  /** Direct access to the handler map (test helper). */
   _handlers: Map<string, Array<(payload: unknown) => void>>;
 }
 
@@ -57,7 +51,6 @@ function createMockSocket() {
       }
       return ch;
     }),
-    /** Get a channel that was already created (test helper). */
     _getChannel(topic: string): MockChannel | undefined {
       return channels.get(topic);
     },
@@ -71,10 +64,15 @@ function createMockApi() {
       data: {
         id: "acc-1",
         email: "test@example.com",
-        display_name: "Test Agent",
+        display_name: "Operator Account",
         description: null,
-        allow_direct_connections: true,
         verified: true,
+        current_identity: {
+          id: "ident-1",
+          display_name: "Test Agent",
+          is_default: true,
+        },
+        inserted_at: "2026-01-01T00:00:00Z",
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
       },
@@ -90,11 +88,11 @@ function createMockBuffer() {
   return {
     addGroupMessage: vi.fn(),
     addDirectMessage: vi.fn(),
+    clearAll: vi.fn(),
     clearGroup: vi.fn(),
   };
 }
 
-/** Minimal GroupResponse factory. */
 function makeGroup(id: string) {
   return {
     id,
@@ -110,10 +108,6 @@ function makeGroup(id: string) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 describe("startOrchestration", () => {
   let api: ReturnType<typeof createMockApi>;
   let socket: ReturnType<typeof createMockSocket>;
@@ -127,22 +121,119 @@ describe("startOrchestration", () => {
     deps = { api, socket, buffer };
   });
 
-  // 1. Authenticates and connects WebSocket
   it("authenticates and connects WebSocket", async () => {
     const result = await startOrchestration(deps);
 
     expect(api.getAccount).toHaveBeenCalledOnce();
+    expect(buffer.clearAll).toHaveBeenCalledOnce();
     expect(socket.connect).toHaveBeenCalledOnce();
-    expect(socket.channel).toHaveBeenCalledWith("account:acc-1");
+    expect(socket.channel).toHaveBeenCalledWith("identity:ident-1");
 
-    const accountCh = socket._getChannel("account:acc-1");
-    expect(accountCh?.join).toHaveBeenCalledOnce();
+    const identityCh = socket._getChannel("identity:ident-1");
+    expect(identityCh?.join).toHaveBeenCalledOnce();
 
-    expect(result.accountId).toBe("acc-1");
-    expect(result.displayName).toBe("Test Agent");
+    expect(result.currentIdentityId).toBe("ident-1");
+    expect(result.actingIdentityDisplayName).toBe("Test Agent");
+    expect(result.actingIdentityIsDefault).toBe(true);
+    expect(result.accountDisplayName).toBe("Operator Account");
   });
 
-  // 2. Paginates through all group memberships
+  it("fails startup when current_identity is missing", async () => {
+    api.getAccount.mockResolvedValue({
+      data: {
+        id: "acc-1",
+        email: "test@example.com",
+        display_name: "Operator Account",
+        description: null,
+        verified: true,
+        current_identity: null,
+        inserted_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    });
+
+    await expect(startOrchestration(deps)).rejects.toThrow("invalid current_identity");
+    expect(socket.connect).not.toHaveBeenCalled();
+  });
+
+  it("fails startup when current_identity is malformed", async () => {
+    api.getAccount.mockResolvedValue({
+      data: {
+        id: "acc-1",
+        email: "test@example.com",
+        display_name: "Operator Account",
+        description: null,
+        verified: true,
+        current_identity: {
+          id: "ident-1",
+          display_name: "Test Agent",
+        },
+        inserted_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    });
+
+    await expect(startOrchestration(deps)).rejects.toThrow("invalid current_identity");
+    expect(socket.connect).not.toHaveBeenCalled();
+  });
+
+  it("fails startup when acting identity topic join fails", async () => {
+    const identityChannel = createMockChannel();
+    identityChannel.join.mockRejectedValue(
+      new Error('Channel join failed for topic "identity:ident-1"'),
+    );
+    socket._channels.set("identity:ident-1", identityChannel);
+
+    await expect(startOrchestration(deps)).rejects.toThrow(
+      'Failed to join acting identity topic identity:ident-1: Channel join failed for topic "identity:ident-1"',
+    );
+  });
+
+  it("tolerates initial group join not_a_member mismatch and continues startup", async () => {
+    api.getMyGroups.mockResolvedValue({
+      data: [makeGroup("g-ok"), makeGroup("g-skip")],
+      meta: { has_more: false, next_cursor: null, count: 2 },
+    });
+
+    const unauthorizedChannel = createMockChannel();
+    unauthorizedChannel.join.mockRejectedValue(
+      new Error(
+        'Channel join failed for topic "group:g-skip" | status="error" | reason="not_a_member"',
+      ),
+    );
+    socket._channels.set("group:g-skip", unauthorizedChannel);
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await startOrchestration(deps);
+
+    const identityCh = socket._getChannel("identity:ident-1");
+    const authorizedChannel = socket._getChannel("group:g-ok");
+
+    expect(identityCh?.join).toHaveBeenCalledOnce();
+    expect(authorizedChannel?.join).toHaveBeenCalledOnce();
+    expect(unauthorizedChannel.join).toHaveBeenCalledOnce();
+    expect(result.joinedGroups.has("g-ok")).toBe(true);
+    expect(result.joinedGroups.has("g-skip")).toBe(false);
+    expect(unauthorizedChannel.off).toHaveBeenCalledWith("new_message", expect.any(Function));
+
+    const onHandler = unauthorizedChannel.on.mock.calls.find(
+      (c: unknown[]) => c[0] === "new_message",
+    )?.[1];
+    const offHandler = unauthorizedChannel.off.mock.calls.find(
+      (c: unknown[]) => c[0] === "new_message",
+    )?.[1];
+    expect(onHandler).toBe(offHandler);
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Startup membership mismatch: getMyGroups returned group:g-skip"),
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
+
   it("paginates through all group memberships", async () => {
     api.getMyGroups
       .mockResolvedValueOnce({
@@ -159,14 +250,11 @@ describe("startOrchestration", () => {
     expect(api.getMyGroups).toHaveBeenCalledTimes(2);
     expect(api.getMyGroups).toHaveBeenNthCalledWith(1, { limit: 100, after: undefined });
     expect(api.getMyGroups).toHaveBeenNthCalledWith(2, { limit: 100, after: "cursor-1" });
-
-    // All 3 groups should be joined
     expect(socket._getChannel("group:g-1")?.join).toHaveBeenCalledOnce();
     expect(socket._getChannel("group:g-2")?.join).toHaveBeenCalledOnce();
     expect(socket._getChannel("group:g-3")?.join).toHaveBeenCalledOnce();
   });
 
-  // 3. Joins all initial group channels with handlers
   it("joins all initial group channels with handlers", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [makeGroup("g-1"), makeGroup("g-2")],
@@ -182,12 +270,10 @@ describe("startOrchestration", () => {
     expect(ch1?.join).toHaveBeenCalledOnce();
     expect(ch2?.on).toHaveBeenCalledWith("new_message", expect.any(Function));
     expect(ch2?.join).toHaveBeenCalledOnce();
-
     expect(result.joinedGroups.has("g-1")).toBe(true);
     expect(result.joinedGroups.has("g-2")).toBe(true);
   });
 
-  // 4. Deduplicates group joins
   it("deduplicates group joins (setupGroupChannel called twice)", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [makeGroup("g-1")],
@@ -199,18 +285,14 @@ describe("startOrchestration", () => {
     const ch1 = socket._getChannel("group:g-1")!;
     expect(ch1.join).toHaveBeenCalledOnce();
 
-    // Trigger group_joined for the same group
-    const accountCh = socket._getChannel("account:acc-1")!;
-    accountCh.trigger("group_joined", { group_id: "g-1", role: "member" });
+    const identityCh = socket._getChannel("identity:ident-1")!;
+    identityCh.trigger("group_joined", { group_id: "g-1", role: "member" });
 
-    // Wait for the async handler to settle
     await vi.waitFor(() => {
-      // join should still only have been called once — dedup guard prevents re-join
       expect(ch1.join).toHaveBeenCalledOnce();
     });
   });
 
-  // 5. Cleans up handler on join failure
   it("cleans up handler on join failure", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [makeGroup("g-fail")],
@@ -223,9 +305,7 @@ describe("startOrchestration", () => {
 
     await expect(startOrchestration(deps)).rejects.toThrow("join rejected");
 
-    // Handler should have been cleaned up
     expect(failChannel.off).toHaveBeenCalledWith("new_message", expect.any(Function));
-    // The handler passed to off should be the same one passed to on
     const onHandler = failChannel.on.mock.calls.find((c: unknown[]) => c[0] === "new_message")?.[1];
     const offHandler = failChannel.off.mock.calls.find(
       (c: unknown[]) => c[0] === "new_message",
@@ -233,7 +313,25 @@ describe("startOrchestration", () => {
     expect(onHandler).toBe(offHandler);
   });
 
-  // 6. group_joined event triggers channel setup
+  it("still rejects initial group join failures for reasons other than not_a_member", async () => {
+    api.getMyGroups.mockResolvedValue({
+      data: [makeGroup("g-fail")],
+      meta: { has_more: false, next_cursor: null, count: 1 },
+    });
+
+    const failChannel = createMockChannel();
+    failChannel.join.mockRejectedValue(
+      new Error(
+        'Channel join failed for topic "group:g-fail" | status="error" | reason="server_error"',
+      ),
+    );
+    socket._channels.set("group:g-fail", failChannel);
+
+    await expect(startOrchestration(deps)).rejects.toThrow('reason="server_error"');
+
+    expect(failChannel.off).toHaveBeenCalledWith("new_message", expect.any(Function));
+  });
+
   it("group_joined event triggers channel setup", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [],
@@ -242,11 +340,9 @@ describe("startOrchestration", () => {
 
     await startOrchestration(deps);
 
-    // Trigger group_joined for a new group
-    const accountCh = socket._getChannel("account:acc-1")!;
-    accountCh.trigger("group_joined", { group_id: "g-new", role: "member" });
+    const identityCh = socket._getChannel("identity:ident-1")!;
+    identityCh.trigger("group_joined", { group_id: "g-new", role: "member" });
 
-    // Wait for the async handler to settle
     await vi.waitFor(() => {
       const newCh = socket._getChannel("group:g-new");
       expect(newCh?.join).toHaveBeenCalledOnce();
@@ -254,7 +350,6 @@ describe("startOrchestration", () => {
     });
   });
 
-  // 7. group_left event leaves channel and clears buffer
   it("group_left event leaves channel and clears buffer", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [makeGroup("g-1")],
@@ -265,10 +360,8 @@ describe("startOrchestration", () => {
     expect(result.joinedGroups.has("g-1")).toBe(true);
 
     const groupCh = socket._getChannel("group:g-1")!;
-
-    // Trigger group_left
-    const accountCh = socket._getChannel("account:acc-1")!;
-    accountCh.trigger("group_left", { group_id: "g-1" });
+    const identityCh = socket._getChannel("identity:ident-1")!;
+    identityCh.trigger("group_left", { group_id: "g-1" });
 
     await vi.waitFor(() => {
       expect(groupCh.off).toHaveBeenCalledWith("new_message", expect.any(Function));
@@ -278,7 +371,6 @@ describe("startOrchestration", () => {
     });
   });
 
-  // 8. group_left for unknown group is ignored
   it("group_left for unknown group is ignored", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [],
@@ -288,10 +380,8 @@ describe("startOrchestration", () => {
     await startOrchestration(deps);
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    // Trigger group_left for a group that was never joined
-    const accountCh = socket._getChannel("account:acc-1")!;
-    accountCh.trigger("group_left", { group_id: "g-unknown" });
+    const identityCh = socket._getChannel("identity:ident-1")!;
+    identityCh.trigger("group_left", { group_id: "g-unknown" });
 
     await vi.waitFor(() => {
       expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -299,7 +389,6 @@ describe("startOrchestration", () => {
       );
     });
 
-    // No channel leave should have been called
     const unknownCh = socket._getChannel("group:g-unknown");
     expect(unknownCh).toBeUndefined();
     expect(buffer.clearGroup).not.toHaveBeenCalled();
@@ -307,7 +396,6 @@ describe("startOrchestration", () => {
     consoleErrorSpy.mockRestore();
   });
 
-  // 9. new_message handler buffers group messages
   it("new_message handler buffers group messages", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [makeGroup("g-1")],
@@ -317,7 +405,6 @@ describe("startOrchestration", () => {
     await startOrchestration(deps);
 
     const groupCh = socket._getChannel("group:g-1")!;
-
     const fakeMessage = {
       id: "msg-1",
       group_id: "g-1",
@@ -328,32 +415,26 @@ describe("startOrchestration", () => {
       created_at: "2026-01-01T00:00:00Z",
     };
 
-    // Trigger the new_message handler
     groupCh.trigger("new_message", fakeMessage);
-
     expect(buffer.addGroupMessage).toHaveBeenCalledWith("g-1", fakeMessage);
   });
 
-  // 10. new_direct_message handler buffers direct messages
   it("new_direct_message handler buffers direct messages", async () => {
     await startOrchestration(deps);
 
-    const accountCh = socket._getChannel("account:acc-1")!;
-
+    const identityCh = socket._getChannel("identity:ident-1")!;
     const fakeDM = {
       id: "dm-1",
       content: "Hi there",
       sender: { id: "s-1", display_name: "Sender", verified: true },
-      recipient: { id: "acc-1", display_name: "Test Agent" },
+      recipient: { id: "ident-1", display_name: "Test Agent" },
       created_at: "2026-01-01T00:00:00Z",
     };
 
-    accountCh.trigger("new_direct_message", fakeDM);
-
+    identityCh.trigger("new_direct_message", fakeDM);
     expect(buffer.addDirectMessage).toHaveBeenCalledWith(fakeDM);
   });
 
-  // 11. group_left clears buffer AFTER leave (order matters)
   it("group_left clears buffer after leave completes", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [makeGroup("g-1")],
@@ -372,15 +453,14 @@ describe("startOrchestration", () => {
       callOrder.push("clearGroup");
     });
 
-    const accountCh = socket._getChannel("account:acc-1")!;
-    accountCh.trigger("group_left", { group_id: "g-1" });
+    const identityCh = socket._getChannel("identity:ident-1")!;
+    identityCh.trigger("group_left", { group_id: "g-1" });
 
     await vi.waitFor(() => {
       expect(callOrder).toEqual(["leave", "clearGroup"]);
     });
   });
 
-  // 12. group_left tolerates leave() throwing
   it("group_left tolerates leave() throwing", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [makeGroup("g-1")],
@@ -388,17 +468,14 @@ describe("startOrchestration", () => {
     });
 
     const result = await startOrchestration(deps);
-
     const groupCh = socket._getChannel("group:g-1")!;
     groupCh.leave.mockRejectedValue(new Error("leave failed"));
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const accountCh = socket._getChannel("account:acc-1")!;
-    accountCh.trigger("group_left", { group_id: "g-1" });
+    const identityCh = socket._getChannel("identity:ident-1")!;
+    identityCh.trigger("group_left", { group_id: "g-1" });
 
     await vi.waitFor(() => {
-      // Buffer should still be cleared even though leave() threw
       expect(buffer.clearGroup).toHaveBeenCalledWith("g-1");
       expect(result.joinedGroups.has("g-1")).toBe(false);
     });
@@ -406,7 +483,6 @@ describe("startOrchestration", () => {
     consoleErrorSpy.mockRestore();
   });
 
-  // 13. group_joined failure is caught and logged (no unhandled rejection)
   it("group_joined failure is caught and logged", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [],
@@ -415,15 +491,13 @@ describe("startOrchestration", () => {
 
     await startOrchestration(deps);
 
-    // Pre-create a channel that will fail to join
     const failChannel = createMockChannel();
     failChannel.join.mockRejectedValue(new Error("server error"));
     socket._channels.set("group:g-fail", failChannel);
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const accountCh = socket._getChannel("account:acc-1")!;
-    accountCh.trigger("group_joined", { group_id: "g-fail", role: "member" });
+    const identityCh = socket._getChannel("identity:ident-1")!;
+    identityCh.trigger("group_joined", { group_id: "g-fail", role: "member" });
 
     await vi.waitFor(() => {
       expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -434,7 +508,6 @@ describe("startOrchestration", () => {
     consoleErrorSpy.mockRestore();
   });
 
-  // 14. Returns correct startup result
   it("returns correct startup result shape", async () => {
     api.getMyGroups.mockResolvedValue({
       data: [makeGroup("g-1"), makeGroup("g-2")],
@@ -445,8 +518,10 @@ describe("startOrchestration", () => {
 
     expect(result).toEqual(
       expect.objectContaining({
-        accountId: "acc-1",
-        displayName: "Test Agent",
+        currentIdentityId: "ident-1",
+        actingIdentityDisplayName: "Test Agent",
+        actingIdentityIsDefault: true,
+        accountDisplayName: "Operator Account",
       }),
     );
     expect(result.joinedGroups).toBeInstanceOf(Set);

@@ -38,15 +38,20 @@ describe("MeshimizeAPI", () => {
     vi.useRealTimers();
   });
 
-  it("getAccount() sends GET with correct auth header and returns AccountResponse", async () => {
+  it("getAccount() sends GET with correct auth header and returns current_identity payload", async () => {
     const accountData = {
       data: {
         id: "550e8400-e29b-41d4-a716-446655440000",
         email: "dev@example.com",
-        display_name: "Acme Agent",
+        display_name: "Acme Operator",
         description: null,
-        allow_direct_connections: true,
         verified: false,
+        current_identity: {
+          id: "660e8400-e29b-41d4-a716-446655440000",
+          display_name: "Acme Agent",
+          is_default: true,
+        },
+        inserted_at: "2026-02-16T10:00:00.000000Z",
         created_at: "2026-02-16T10:00:00.000000Z",
         updated_at: "2026-02-16T10:00:00.000000Z",
       },
@@ -99,7 +104,7 @@ describe("MeshimizeAPI", () => {
     const joinResult = {
       data: {
         group_id: "group-1",
-        account_id: "account-1",
+        agent_identity_id: "identity-1",
         role: "member",
         created_at: "2026-02-16T10:00:00.000000Z",
       },
@@ -139,7 +144,6 @@ describe("MeshimizeAPI", () => {
     const [, options] = mockFetch.mock.calls[0];
     const parsedBody = JSON.parse(options.body as string);
 
-    // Flat JSON body — not nested under "message" key
     expect(parsedBody).toEqual({
       content: "Hello world",
       message_type: "question",
@@ -148,7 +152,7 @@ describe("MeshimizeAPI", () => {
     expect(parsedBody).not.toHaveProperty("message");
   });
 
-  it("sendDirectMessage() sends recipient_account_id (NOT recipient_id) as flat JSON", async () => {
+  it("sendDirectMessage() sends recipient_identity_id (NOT recipient_id) as flat JSON", async () => {
     const dmResult = {
       data: {
         id: "dm-1",
@@ -162,16 +166,15 @@ describe("MeshimizeAPI", () => {
 
     const api = new MeshimizeAPI(createTestConfig());
     await api.sendDirectMessage({
-      recipient_account_id: "recipient-1",
+      recipient_identity_id: "recipient-1",
       content: "Hey there",
     });
 
     const [, options] = mockFetch.mock.calls[0];
     const parsedBody = JSON.parse(options.body as string);
 
-    // Flat body with recipient_account_id (NOT recipient_id)
     expect(parsedBody).toEqual({
-      recipient_account_id: "recipient-1",
+      recipient_identity_id: "recipient-1",
       content: "Hey there",
     });
     expect(parsedBody).not.toHaveProperty("recipient_id");
@@ -285,8 +288,13 @@ describe("MeshimizeAPI", () => {
             email: "test@example.com",
             display_name: "Test",
             description: null,
-            allow_direct_connections: true,
             verified: false,
+            current_identity: {
+              id: "identity-1",
+              display_name: "Test Identity",
+              is_default: false,
+            },
+            inserted_at: "2026-02-16T10:00:00.000000Z",
             created_at: "2026-02-16T10:00:00.000000Z",
             updated_at: "2026-02-16T10:00:00.000000Z",
           },
@@ -296,7 +304,6 @@ describe("MeshimizeAPI", () => {
     const api = new MeshimizeAPI(createTestConfig());
     const requestPromise = api.getAccount();
 
-    // Advance past the Retry-After delay (1 second)
     await vi.advanceTimersByTimeAsync(2_000);
 
     const result = await requestPromise;
@@ -315,8 +322,13 @@ describe("MeshimizeAPI", () => {
             email: "test@example.com",
             display_name: "Test",
             description: null,
-            allow_direct_connections: true,
             verified: false,
+            current_identity: {
+              id: "identity-1",
+              display_name: "Test Identity",
+              is_default: false,
+            },
+            inserted_at: "2026-02-16T10:00:00.000000Z",
             created_at: "2026-02-16T10:00:00.000000Z",
             updated_at: "2026-02-16T10:00:00.000000Z",
           },
@@ -326,7 +338,6 @@ describe("MeshimizeAPI", () => {
     const api = new MeshimizeAPI(createTestConfig());
     const requestPromise = api.getAccount();
 
-    // Advance past the exponential backoff delay (up to 30s max)
     await vi.advanceTimersByTimeAsync(31_000);
 
     const result = await requestPromise;
@@ -343,13 +354,11 @@ describe("MeshimizeAPI", () => {
 
     const api = new MeshimizeAPI(createTestConfig());
 
-    // Capture the rejection eagerly so it doesn't leak as unhandled
     let caughtErr: unknown;
     const requestPromise = api.getAccount().catch((err) => {
       caughtErr = err;
     });
 
-    // Advance past both retry delays (each up to 30s max)
     await vi.advanceTimersByTimeAsync(60_000);
     await requestPromise;
 
@@ -397,7 +406,53 @@ describe("MeshimizeAPI", () => {
     }
   });
 
-  // --- Delegation REST methods ---
+  it("createDelegation() sends target_identity_id and returns identity-scoped delegation", async () => {
+    const delegationData = {
+      data: {
+        id: "del-1",
+        state: "pending",
+        group_id: "group-1",
+        group_name: "Test Group",
+        sender_identity_id: "sender-identity-1",
+        sender_display_name: "Sender",
+        target_identity_id: "target-identity-1",
+        target_display_name: "Target",
+        assignee_identity_id: null,
+        assignee_display_name: null,
+        description: "A task",
+        result: null,
+        original_ttl_seconds: 86400,
+        expires_at: "2026-04-03T00:00:00Z",
+        accepted_at: null,
+        completed_at: null,
+        acknowledged_at: null,
+        cancelled_at: null,
+        inserted_at: "2026-04-02T00:00:00Z",
+        updated_at: "2026-04-02T00:00:00Z",
+      },
+    };
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(200, delegationData));
+
+    const api = new MeshimizeAPI(createTestConfig());
+    const result = await api.createDelegation({
+      group_id: "group-1",
+      description: "A task",
+      target_identity_id: "target-identity-1",
+      ttl_seconds: 3600,
+    });
+
+    expect(result).toEqual(delegationData);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://api.meshimize.com/api/v1/delegations");
+    expect(options.method).toBe("POST");
+    const parsedBody = JSON.parse(options.body as string);
+    expect(parsedBody).toEqual({
+      group_id: "group-1",
+      description: "A task",
+      target_identity_id: "target-identity-1",
+      ttl_seconds: 3600,
+    });
+  });
 
   it("acknowledgeDelegation() sends POST to correct path with no body", async () => {
     const delegationData = {
@@ -406,11 +461,11 @@ describe("MeshimizeAPI", () => {
         state: "acknowledged",
         group_id: "group-1",
         group_name: "Test Group",
-        sender_account_id: "sender-1",
+        sender_identity_id: "sender-1",
         sender_display_name: "Sender",
-        target_account_id: null,
+        target_identity_id: null,
         target_display_name: null,
-        assignee_account_id: "assignee-1",
+        assignee_identity_id: "assignee-1",
         assignee_display_name: "Assignee",
         description: null,
         result: null,
@@ -433,7 +488,6 @@ describe("MeshimizeAPI", () => {
     const [url, options] = mockFetch.mock.calls[0];
     expect(url).toBe("https://api.meshimize.com/api/v1/delegations/del-1/acknowledge");
     expect(options.method).toBe("POST");
-    // No Content-Type header since there is no body
     expect(options.headers["Content-Type"]).toBeUndefined();
     expect(options.body).toBeUndefined();
   });
@@ -445,11 +499,11 @@ describe("MeshimizeAPI", () => {
         state: "pending",
         group_id: "group-1",
         group_name: "Test Group",
-        sender_account_id: "sender-1",
+        sender_identity_id: "sender-1",
         sender_display_name: "Sender",
-        target_account_id: null,
+        target_identity_id: null,
         target_display_name: null,
-        assignee_account_id: null,
+        assignee_identity_id: null,
         assignee_display_name: null,
         description: "A task",
         result: null,
@@ -484,11 +538,11 @@ describe("MeshimizeAPI", () => {
         state: "pending",
         group_id: "group-1",
         group_name: "Test Group",
-        sender_account_id: "sender-1",
+        sender_identity_id: "sender-1",
         sender_display_name: "Sender",
-        target_account_id: null,
+        target_identity_id: null,
         target_display_name: null,
-        assignee_account_id: null,
+        assignee_identity_id: null,
         assignee_display_name: null,
         description: "A task",
         result: null,
@@ -511,7 +565,6 @@ describe("MeshimizeAPI", () => {
     const [url, options] = mockFetch.mock.calls[0];
     expect(url).toBe("https://api.meshimize.com/api/v1/delegations/del-1/extend");
     expect(options.method).toBe("POST");
-    // No Content-Type header since there is no body
     expect(options.headers["Content-Type"]).toBeUndefined();
     expect(options.body).toBeUndefined();
   });

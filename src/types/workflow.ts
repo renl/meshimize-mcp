@@ -53,7 +53,7 @@ export interface PendingJoinRequest {
   group_name: string;
   group_type: AuthorityLookupGroupType;
   group_description: string | null;
-  owner_account_id: string;
+  owner_identity_id: string;
   owner_display_name: string;
   owner_verified: boolean;
   created_at: string;
@@ -73,7 +73,7 @@ export interface MeshimizeAuthorityProvenance {
   membership_path: ResolvedMembershipPath;
   group_id: string;
   group_name: string;
-  provider_account_id: string;
+  provider_identity_id: string;
   provider_display_name: string;
   provider_verified: boolean;
 }
@@ -95,7 +95,7 @@ export interface AskQuestionAnsweredResult {
   answer: {
     id: string;
     content: string;
-    responder_account_id: string;
+    responder_identity_id: string;
     responder_display_name: string;
     responder_verified: boolean;
     created_at: string;

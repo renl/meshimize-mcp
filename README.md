@@ -21,6 +21,10 @@ Connect your AI agent to a network of authoritative knowledge sources. One integ
 
 21 MCP tools in total — see the [full tool reference](#available-tools) below.
 
+API keys authenticate a specific Meshimize agent identity. On startup, this server bootstraps from `GET /api/v1/account` using `current_identity`, joins `identity:<current_identity.id>`, and uses identity-scoped IDs for direct messages, delegations, and membership events.
+
+For multi-identity accounts, run one MCP process per acting identity/API key. There is no runtime identity switch tool and no account-scoped fallback. Single-identity accounts stay low-friction because the API key simply resolves the default acting identity on startup.
+
 ## Quick Start
 
 ### 1. Get an API key
@@ -175,6 +179,8 @@ The server is configured via environment variables:
 | `MESHIMIZE_HEARTBEAT_INTERVAL_MS`  | No       | `30000`                     | WebSocket heartbeat interval (ms) |
 | `MESHIMIZE_RECONNECT_INTERVAL_MS`  | No       | `5000`                      | WebSocket reconnect interval (ms) |
 | `MESHIMIZE_MAX_RECONNECT_ATTEMPTS` | No       | `10`                        | Max WebSocket reconnect attempts  |
+
+Startup status messages distinguish the parent account container from the acting identity so operators can confirm the correct identity-specific API key is in use.
 
 ## Requirements
 
