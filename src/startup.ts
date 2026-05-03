@@ -90,40 +90,8 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
 
   console.error(`[meshimize-mcp] Joined acting identity topic ${identityChannelTopic}`);
 
-  const allGroups: GroupResponse[] = [];
-  let cursor: string | undefined;
-  do {
-    const page: PaginatedResponse<GroupResponse> = await api.getMyGroups({
-      limit: 100,
-      after: cursor,
-    });
-    allGroups.push(...page.data);
-    cursor = page.meta.has_more && page.meta.next_cursor ? page.meta.next_cursor : undefined;
-  } while (cursor);
-
   const joinedGroups = new Set<string>();
   const groupHandlers = new Map<string, (payload: unknown) => void>();
-
-  async function setupGroupChannel(groupId: string): Promise<void> {
-    if (joinedGroups.has(groupId)) return;
-
-    const ch: Channel = socket.channel(`group:${groupId}`);
-    const handler = (payload: unknown): void => {
-      buffer.addGroupMessage(groupId, payload as MessageDataResponse);
-    };
-    ch.on("new_message", handler);
-    groupHandlers.set(groupId, handler);
-
-    try {
-      await ch.join();
-      joinedGroups.add(groupId);
-      console.error(`[meshimize-mcp] Joined group:${groupId}`);
-    } catch (err) {
-      ch.off("new_message", handler);
-      groupHandlers.delete(groupId);
-      throw err;
-    }
-  }
 
   async function handleGroupLeft(groupId: string): Promise<void> {
     if (!joinedGroups.has(groupId)) {
@@ -150,17 +118,23 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
     console.error(`[meshimize-mcp] Left group:${groupId}`);
   }
 
-  for (const group of allGroups) {
-    try {
-      await setupGroupChannel(group.id);
-    } catch (err) {
-      if (isNotAMemberInitialGroupJoinFailure(err, group.id)) {
-        console.error(
-          `[meshimize-mcp] Startup membership mismatch: getMyGroups returned group:${group.id}, but channel join was rejected with reason="not_a_member". Skipping group subscription.`,
-        );
-        continue;
-      }
+  async function setupGroupChannel(groupId: string): Promise<void> {
+    if (joinedGroups.has(groupId)) return;
 
+    const ch: Channel = socket.channel(`group:${groupId}`);
+    const handler = (payload: unknown): void => {
+      buffer.addGroupMessage(groupId, payload as MessageDataResponse);
+    };
+    ch.on("new_message", handler);
+    groupHandlers.set(groupId, handler);
+
+    try {
+      await ch.join();
+      joinedGroups.add(groupId);
+      console.error(`[meshimize-mcp] Joined group:${groupId}`);
+    } catch (err) {
+      ch.off("new_message", handler);
+      groupHandlers.delete(groupId);
       throw err;
     }
   }
@@ -184,6 +158,32 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
       console.error(`[meshimize-mcp] Error handling group_left for ${group_id}: ${msg}`);
     });
   });
+
+  const allGroups: GroupResponse[] = [];
+  let cursor: string | undefined;
+  do {
+    const page: PaginatedResponse<GroupResponse> = await api.getMyGroups({
+      limit: 100,
+      after: cursor,
+    });
+    allGroups.push(...page.data);
+    cursor = page.meta.has_more && page.meta.next_cursor ? page.meta.next_cursor : undefined;
+  } while (cursor);
+
+  for (const group of allGroups) {
+    try {
+      await setupGroupChannel(group.id);
+    } catch (err) {
+      if (isNotAMemberInitialGroupJoinFailure(err, group.id)) {
+        console.error(
+          `[meshimize-mcp] Startup membership mismatch: getMyGroups returned group:${group.id}, but channel join was rejected with reason="not_a_member". Skipping group subscription.`,
+        );
+        continue;
+      }
+
+      throw err;
+    }
+  }
 
   return {
     currentIdentityId: currentIdentity.id,
