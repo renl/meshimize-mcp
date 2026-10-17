@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   const startup = await startOrchestration({ api, socket, buffer });
 
   // 4. Create and start MCP server
-  const server = new McpServer({ name: "meshimize-mcp", version: "0.1.18" });
+  const server = new McpServer({ name: "meshimize-mcp", version: "0.1.19" });
   registerTools(server, {
     api,
     socket,
@@ -60,6 +60,7 @@ async function main(): Promise<void> {
     membershipPaths,
     authoritySessionContext,
     workflowRecorder: noopWorkflowSupportRecorder,
+    groupReceiver: startup.groupReceiver,
   });
 
   const transport = new StdioServerTransport();

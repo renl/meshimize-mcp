@@ -50,6 +50,15 @@ export class MeshimizeAPIError extends Error {
   }
 }
 
+interface RequestOptions {
+  /**
+   * `false` disables every automatic retry for this request. Used by authenticated
+   * non-idempotent writes (the group join): a retried write can commit twice, and a
+   * retry after a lost response replays a join whose server outcome is already unknown.
+   */
+  retry?: boolean;
+}
+
 export class MeshimizeAPI {
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -60,8 +69,13 @@ export class MeshimizeAPI {
     this.apiKey = config.apiKey;
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const maxAttempts = 3;
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    options?: RequestOptions,
+  ): Promise<T> {
+    const maxAttempts = options?.retry === false ? 1 : 3;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const headers: Record<string, string> = {
@@ -155,7 +169,10 @@ export class MeshimizeAPI {
   }
 
   async joinGroup(groupId: string): Promise<{ data: GroupJoinResponse }> {
-    return this.request("POST", `/groups/${groupId}/join`);
+    // One operator approval = at most one physical authenticated write. A join is not
+    // idempotent from the caller's point of view, so 429 and transport failures are
+    // surfaced instead of replayed; the caller decides, with the operator, what next.
+    return this.request("POST", `/groups/${groupId}/join`, undefined, { retry: false });
   }
 
   async leaveGroup(groupId: string): Promise<void> {

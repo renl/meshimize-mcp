@@ -4,7 +4,25 @@ import type { ToolDependencies } from "./index.js";
 import { findMyGroupById } from "./my-groups.js";
 import { normalizeAuthorityLookupKey } from "../state/authority-lookups.js";
 import { toAuthorityContinuation } from "../state/authority-session-context.js";
+import { MeshimizeAPIError } from "../api/client.js";
+import type { GroupJoinResponse } from "../types/groups.js";
+import type { GroupReceiverOutcome } from "../startup.js";
 import type { ApproveJoinResult } from "../types/workflow.js";
+
+/** Bounded wait for the actual `group:<id>` receiver after a successful join write. */
+const JOIN_RECEIVER_READY_TIMEOUT_MS = 10_000;
+
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * True when the server answered the join write with a refusal (for example 429), so the
+ * write provably did not commit and the outcome is not ambiguous.
+ */
+function isDefinitiveJoinRejection(error: unknown): boolean {
+  return error instanceof MeshimizeAPIError && error.status >= 400 && error.status < 500;
+}
 
 function buildPendingJoinGroup(group: {
   id: string;
@@ -208,8 +226,9 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
 /**
  * Completes a pending join after operator approval.
  * This is the ONLY path that calls POST /groups/:group_id/join.
- * Does NOT make any WebSocket calls — channel subscription is automatic
- * via the identity channel's group_joined event handler.
+ * Does NOT create the WebSocket subscription directly — the identity channel's
+ * `group_joined` handler establishes the `group:<id>` receiver, and this handler
+ * waits for that receiver's acknowledgement before advertising readiness.
  */
 export async function approveJoinHandler(args: { group_id: string }, deps: ToolDependencies) {
   if (!deps.pendingJoins.getByGroupId(args.group_id)) {
@@ -219,32 +238,96 @@ export async function approveJoinHandler(args: { group_id: string }, deps: ToolD
     );
   }
 
-  const result = await deps.api.joinGroup(args.group_id);
+  // A failure from an earlier attempt is stale once the operator deliberately approves
+  // again; ready state is kept because an established receiver stays established.
+  deps.groupReceiver?.resetFailure(args.group_id);
 
+  let result: { data: GroupJoinResponse };
+  try {
+    result = await deps.api.joinGroup(args.group_id);
+  } catch (error) {
+    const message = getErrorMessage(error);
+
+    if (isDefinitiveJoinRejection(error)) {
+      // The server answered and refused the write: nothing was committed, so the pending
+      // request is kept for a deliberate, operator-approved retry. Still no automatic replay.
+      throw new Error(
+        `Meshimize rejected the join for group ${args.group_id}: ${message}. ` +
+          "No membership was created and the join was not replayed. " +
+          "The pending request is still held, so ask your operator again before retrying `approve_join`.",
+      );
+    }
+
+    // The write reached Meshimize but its outcome is unknown (lost response, transport
+    // reset). Membership may already exist, so replaying would be a silent second write.
+    deps.pendingJoins.remove(args.group_id);
+    deps.membershipPaths.clear(args.group_id);
+    deps.authoritySessionContext.clearGroup(args.group_id);
+    throw new Error(
+      `The join request for group ${args.group_id} was sent to Meshimize but no response was received: ${message}. ` +
+        "Your membership may already exist, and group delivery readiness is unknown. " +
+        "Do not replay the join and do not treat this group as ready to ask; call `list_my_groups` to confirm membership first.",
+    );
+  }
+
+  const role = result.data.role;
+  const receiverOutcome: GroupReceiverOutcome = deps.groupReceiver
+    ? await deps.groupReceiver.waitForReady(args.group_id, JOIN_RECEIVER_READY_TIMEOUT_MS)
+    : // No receiver registry wired (embedded/test dependency set): preserve prior contract.
+      { status: "ready" };
+
+  if (receiverOutcome.status === "ready") {
+    deps.pendingJoins.remove(args.group_id);
+    const authorityContext = deps.authoritySessionContext.recordReadyToAsk(
+      args.group_id,
+      "post_approval_first_ask",
+    );
+    deps.membershipPaths.markPostApprovalFirstAsk(
+      args.group_id,
+      authorityContext.expires_at ?? undefined,
+    );
+    deps.workflowRecorder.record("authority_join_approved", {
+      group_id: args.group_id,
+      role,
+    });
+
+    const approveResult: ApproveJoinResult = {
+      group_id: result.data.group_id,
+      joined: true,
+      membership_path_ready: "post_approval_first_ask",
+      role,
+    };
+
+    return {
+      ...approveResult,
+      authority_continuation: toAuthorityContinuation(authorityContext),
+    };
+  }
+
+  // The REST write succeeded, so membership may already exist — but the actual group
+  // receiver never acknowledged the subscription. Report that truthfully instead of
+  // advertising ready_to_ask / post_approval_first_ask.
   deps.pendingJoins.remove(args.group_id);
-  const authorityContext = deps.authoritySessionContext.recordReadyToAsk(
-    args.group_id,
-    "post_approval_first_ask",
-  );
-  deps.membershipPaths.markPostApprovalFirstAsk(
-    args.group_id,
-    authorityContext.expires_at ?? undefined,
-  );
+  deps.membershipPaths.clear(args.group_id);
+  deps.authoritySessionContext.clearGroup(args.group_id);
   deps.workflowRecorder.record("authority_join_approved", {
     group_id: args.group_id,
-    role: result.data.role,
+    role,
+    receiver_ready: false,
+    receiver_error: receiverOutcome.reason,
   });
 
-  const approveResult: ApproveJoinResult = {
-    group_id: result.data.group_id,
-    joined: true,
-    membership_path_ready: "post_approval_first_ask",
-    role: result.data.role,
-  };
-
   return {
-    ...approveResult,
-    authority_continuation: toAuthorityContinuation(authorityContext),
+    group_id: args.group_id,
+    joined: true,
+    membership_path_ready: null,
+    role,
+    receiver: { ready: false, reason: receiverOutcome.reason },
+    message:
+      `Your membership in group ${args.group_id} may already exist: Meshimize accepted the join request, ` +
+      `but the real-time group receiver did not become ready (${receiverOutcome.reason}). ` +
+      "Group delivery is not ready, so do not call `ask_question` yet and do not replay the join. " +
+      "Call `list_my_groups` to confirm membership, then ask again once the receiver is available.",
   };
 }
 

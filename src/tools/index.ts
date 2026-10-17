@@ -7,6 +7,7 @@ import type { PendingJoinMap } from "../state/pending-joins.js";
 import type { AuthorityLookupMap } from "../state/authority-lookups.js";
 import type { MembershipPathMap } from "../state/membership-paths.js";
 import type { AuthoritySessionContextStore } from "../state/authority-session-context.js";
+import type { GroupReceiverReadiness } from "../startup.js";
 import type { WorkflowSupportRecorder } from "../types/workflow.js";
 
 import {
@@ -37,6 +38,11 @@ export interface ToolDependencies {
   membershipPaths: MembershipPathMap;
   authoritySessionContext: AuthoritySessionContextStore;
   workflowRecorder: WorkflowSupportRecorder;
+  /**
+   * Tracks real-time group receiver readiness. The MCP entrypoint always supplies it;
+   * embedders that omit it lose receiver-readiness gating for `approve_join`.
+   */
+  groupReceiver?: GroupReceiverReadiness;
 }
 
 /**
