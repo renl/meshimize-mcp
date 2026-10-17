@@ -15,7 +15,7 @@ import { randomUUID, createHash } from "node:crypto";
 const home = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const root = resolve(home, "../../../..");
 const mode = process.argv[2] ?? "baseline";
-if (!["baseline", "wire"].includes(mode)) throw Error("Use baseline or wire");
+if (!["baseline", "wire", "suite"].includes(mode)) throw Error("Use baseline, wire or suite");
 const candidate = "a93478e67ad67802f0ea09cb2693733487f98bb3";
 const run = `meshimize-mcp03-${randomUUID().slice(0, 8)}`;
 const out = join(root, "_build/sdet-local/runs", run);
@@ -300,7 +300,7 @@ try {
       "--no-install",
       "vitest",
       "run",
-      "tests/join-wire.test.ts",
+      ...(mode === "wire" ? ["tests/join-wire.test.ts"] : []),
       "--maxWorkers",
       "1",
       "--minWorkers",
