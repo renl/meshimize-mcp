@@ -224,15 +224,24 @@ try {
   );
   await build(`${run}-client`, client);
   if (mode === "baseline") {
-    const server = join(context, "server");
-    mkdirSync(server);
-    const archive = join(out, "server.tar");
-    cmd("git", ["-C", root, "archive", "--format=tar", `--output=${archive}`, candidate]);
-    cmd("tar", ["-xf", archive, "-C", server]);
-    await build(`${run}-server`, server, [
-      "--build-arg",
-      "BUILDER_IMAGE=hexpm/elixir:1.18.4-erlang-27.3.4.16-debian-bookworm-20260824-slim@sha256:dde28876be197773dfc507426802bcedd2671bb411ad0517c33fc296aadf1f3f",
-    ]);
+    const provenance = join(root, "_build/sdet-local/server-cache-03a");
+    const manifest = readFileSync(join(provenance, "source-manifest.json"));
+    const manifestSha256 = createHash("sha256").update(manifest).digest("hex");
+    const provision = JSON.parse(readFileSync(join(provenance, "result.json"), "utf8"));
+    const tag = "meshimize-mcp03a-server:a93478e";
+    const imageId = "sha256:4a77a71f0e3290f0158bd94362db48abe6b7d2eb0c8cc15eaf6195307b6f55d3";
+    if (
+      manifestSha256 !== "da24f7469e6c8b1990ec45fcf49bc1f4ab5c6555efbe1dc4e3a6f1de4ef1c690" ||
+      provision.source !== candidate ||
+      provision.manifestSha256 !== manifestSha256 ||
+      provision.imageId !== imageId ||
+      provision.snapshotVerified !== true ||
+      provision.sourceFiles !== 1837 ||
+      Object.keys(JSON.parse(manifest)).length !== 1837 ||
+      docker(["image", "inspect", tag, "--format", "{{.Id}}"]).value !== imageId
+    )
+      throw Error("Exact server fixture source/image provenance drift");
+    evidence.serverFixture = { imageId, tag, source: candidate, manifestSha256 };
     space("before-disposable-runtime");
     network = docker(["network", "create", "--label", `${label}=${run}`, run]).value;
     const db = create("db", [
@@ -269,7 +278,7 @@ try {
       "PHX_HOST=localhost",
       "-e",
       "MESHIMIZE_RUNTIME_ENV=test",
-      `${run}-server`,
+      evidence.serverFixture.imageId,
     ];
     const migrate = create("migrate", [
       ...appArgs,
