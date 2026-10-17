@@ -238,8 +238,8 @@ export async function approveJoinHandler(args: { group_id: string }, deps: ToolD
     );
   }
 
-  // A failure from an earlier attempt is stale once the operator deliberately approves
-  // again; ready state is kept because an established receiver stays established.
+  // An earlier attempt's failure is stale once the operator deliberately approves again;
+  // ready is kept because an established receiver stays established.
   deps.groupReceiver?.resetFailure(args.group_id);
 
   let result: { data: GroupJoinResponse };
@@ -258,8 +258,8 @@ export async function approveJoinHandler(args: { group_id: string }, deps: ToolD
       );
     }
 
-    // The write reached Meshimize but its outcome is unknown (lost response, transport
-    // reset). Membership may already exist, so replaying would be a silent second write.
+    // Outcome unknown (lost response, transport reset): membership may already exist, so
+    // replaying would be a silent second write.
     deps.pendingJoins.remove(args.group_id);
     deps.membershipPaths.clear(args.group_id);
     deps.authoritySessionContext.clearGroup(args.group_id);
@@ -271,10 +271,10 @@ export async function approveJoinHandler(args: { group_id: string }, deps: ToolD
   }
 
   const role = result.data.role;
+  // A missing registry means readiness cannot be established — never that it is established.
   const receiverOutcome: GroupReceiverOutcome = deps.groupReceiver
     ? await deps.groupReceiver.waitForReady(args.group_id, JOIN_RECEIVER_READY_TIMEOUT_MS)
-    : // No receiver registry wired (embedded/test dependency set): preserve prior contract.
-      { status: "ready" };
+    : { status: "failed", reason: "no group receiver readiness registry is wired" };
 
   if (receiverOutcome.status === "ready") {
     deps.pendingJoins.remove(args.group_id);
@@ -304,9 +304,7 @@ export async function approveJoinHandler(args: { group_id: string }, deps: ToolD
     };
   }
 
-  // The REST write succeeded, so membership may already exist — but the actual group
-  // receiver never acknowledged the subscription. Report that truthfully instead of
-  // advertising ready_to_ask / post_approval_first_ask.
+  // REST write landed but the receiver never acknowledged: report not-ready, not ready_to_ask.
   deps.pendingJoins.remove(args.group_id);
   deps.membershipPaths.clear(args.group_id);
   deps.authoritySessionContext.clearGroup(args.group_id);

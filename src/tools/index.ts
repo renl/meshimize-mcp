@@ -40,7 +40,7 @@ export interface ToolDependencies {
   workflowRecorder: WorkflowSupportRecorder;
   /**
    * Tracks real-time group receiver readiness. The MCP entrypoint always supplies it;
-   * embedders that omit it lose receiver-readiness gating for `approve_join`.
+   * when omitted, `approve_join` still cannot advertise delivery readiness.
    */
   groupReceiver?: GroupReceiverReadiness;
 }

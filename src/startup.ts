@@ -31,15 +31,14 @@ export interface StartupDeps {
 }
 
 /**
- * Outcome of waiting for a group's real-time receiver. `ready` means the `group:<id>`
- * channel join was actually acknowledged, not merely that the REST join returned success.
+ * `ready` only when the `group:<id>` channel join was acknowledged — never merely because
+ * the REST join returned success.
  */
 export type GroupReceiverOutcome = { status: "ready" } | { status: "failed"; reason: string };
 
 /**
- * Tracks whether this process currently holds a live `group:<id>` subscription: only an
- * acknowledged channel join marks a group ready, so callers never advertise "ready to ask"
- * on the strength of an HTTP success alone.
+ * Tracks live `group:<id>` subscriptions: only an acknowledged channel join marks a group
+ * ready, so callers never advertise "ready to ask" on an HTTP success alone.
  */
 export interface GroupReceiverReadiness {
   markReady(groupId: string): void;
