@@ -175,6 +175,10 @@ function hash(dir) {
 }
 try {
   docker(["version", "--format", "{{.Server.Version}}"]);
+  const cache = "meshimize-mcp03a-npm-cache:lock-0f067763c8fa";
+  const cacheId = "sha256:087c27e4186b0d7e036534a6b16c36f4f2f7b9bd128f3fc33d985ba93589a535";
+  if (docker(["image", "inspect", cache, "--format", "{{.Id}}"]).value !== cacheId)
+    throw Error("Dependency image drift/missing");
   if (
     cmd("git", ["-C", root, "rev-parse", "feature/private-group-joining"]).value !== candidate ||
     cmd("git", ["-C", home, "rev-parse", "HEAD"]).value !== evidence.clientCandidate
@@ -216,7 +220,7 @@ try {
   hash(context);
   writeFileSync(
     join(client, "Dockerfile"),
-    "FROM node:22-bookworm-slim\nWORKDIR /proof\nCOPY package*.json ./\nRUN npm ci --ignore-scripts --no-audit --no-fund\nCOPY . .\nRUN npm run build\n",
+    `FROM ${cache}\nWORKDIR /proof\nCOPY package*.json ./\nRUN npm ci --ignore-scripts --no-audit --no-fund\nCOPY . .\nRUN npm run build\n`,
   );
   await build(`${run}-client`, client);
   if (mode === "baseline") {
