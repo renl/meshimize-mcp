@@ -19,12 +19,111 @@ export interface StartupResult {
   actingIdentityIsDefault: boolean;
   accountDisplayName: string;
   joinedGroups: ReadonlySet<string>;
+  groupReceiver: GroupReceiverReadiness;
 }
 
 export interface StartupDeps {
   api: Pick<MeshimizeAPI, "getAccount" | "getMyGroups">;
   socket: Pick<PhoenixSocket, "connect" | "channel">;
   buffer: Pick<MessageBuffer, "addGroupMessage" | "addDirectMessage" | "clearAll" | "clearGroup">;
+  /** Receiver readiness registry. Created locally when the caller does not supply one. */
+  groupReceiver?: GroupReceiverReadiness;
+}
+
+/**
+ * `ready` only when the `group:<id>` channel join was acknowledged — never merely because
+ * the REST join returned success.
+ */
+export type GroupReceiverOutcome = { status: "ready" } | { status: "failed"; reason: string };
+
+/**
+ * Tracks live `group:<id>` subscriptions: only an acknowledged channel join marks a group
+ * ready, so callers never advertise "ready to ask" on an HTTP success alone.
+ */
+export interface GroupReceiverReadiness {
+  markReady(groupId: string): void;
+  markFailed(groupId: string, reason: string): void;
+  /** Clears a stale failure before a fresh, deliberate join attempt. Ready state is kept. */
+  resetFailure(groupId: string): void;
+  waitForReady(groupId: string, timeoutMs: number): Promise<GroupReceiverOutcome>;
+  clear(groupId: string): void;
+}
+
+class GroupReceiverReadinessImpl implements GroupReceiverReadiness {
+  private readonly readyGroups = new Set<string>();
+  private readonly failures = new Map<string, string>();
+  private readonly waiters = new Map<string, Set<(outcome: GroupReceiverOutcome) => void>>();
+
+  markReady(groupId: string): void {
+    this.readyGroups.add(groupId);
+    this.failures.delete(groupId);
+    this.flush(groupId, { status: "ready" });
+  }
+
+  markFailed(groupId: string, reason: string): void {
+    this.readyGroups.delete(groupId);
+    this.failures.set(groupId, reason);
+    this.flush(groupId, { status: "failed", reason });
+  }
+
+  resetFailure(groupId: string): void {
+    this.failures.delete(groupId);
+  }
+
+  waitForReady(groupId: string, timeoutMs: number): Promise<GroupReceiverOutcome> {
+    if (this.readyGroups.has(groupId)) {
+      return Promise.resolve({ status: "ready" });
+    }
+
+    const recordedFailure = this.failures.get(groupId);
+    if (recordedFailure !== undefined) {
+      return Promise.resolve({ status: "failed", reason: recordedFailure });
+    }
+
+    return new Promise<GroupReceiverOutcome>((resolve) => {
+      let settled = false;
+
+      const waiters =
+        this.waiters.get(groupId) ?? new Set<(outcome: GroupReceiverOutcome) => void>();
+      this.waiters.set(groupId, waiters);
+
+      const finish = (outcome: GroupReceiverOutcome): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        waiters.delete(finish);
+        if (waiters.size === 0) this.waiters.delete(groupId);
+        resolve(outcome);
+      };
+
+      const timer = setTimeout(() => {
+        finish({
+          status: "failed",
+          reason: `timed out after ${timeoutMs}ms waiting for the group channel join acknowledgement`,
+        });
+      }, timeoutMs);
+
+      waiters.add(finish);
+    });
+  }
+
+  clear(groupId: string): void {
+    this.readyGroups.delete(groupId);
+    this.failures.delete(groupId);
+    this.flush(groupId, { status: "failed", reason: "group receiver was unsubscribed" });
+  }
+
+  private flush(groupId: string, outcome: GroupReceiverOutcome): void {
+    const waiters = this.waiters.get(groupId);
+    if (!waiters) return;
+    for (const waiter of Array.from(waiters)) {
+      waiter(outcome);
+    }
+  }
+}
+
+export function createGroupReceiverReadiness(): GroupReceiverReadiness {
+  return new GroupReceiverReadinessImpl();
 }
 
 function getErrorMessage(err: unknown): string {
@@ -62,6 +161,7 @@ function requireCurrentIdentity(account: AccountResponse): CurrentIdentityRespon
 
 export async function startOrchestration(deps: StartupDeps): Promise<StartupResult> {
   const { api, socket, buffer } = deps;
+  const groupReceiver = deps.groupReceiver ?? createGroupReceiverReadiness();
 
   buffer.clearAll();
 
@@ -115,11 +215,15 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
     }
 
     buffer.clearGroup(groupId);
+    groupReceiver.clear(groupId);
     console.error(`[meshimize-mcp] Left group:${groupId}`);
   }
 
   async function setupGroupChannel(groupId: string): Promise<void> {
-    if (joinedGroups.has(groupId)) return;
+    if (joinedGroups.has(groupId)) {
+      groupReceiver.markReady(groupId);
+      return;
+    }
 
     const ch: Channel = socket.channel(`group:${groupId}`);
     const handler = (payload: unknown): void => {
@@ -131,10 +235,15 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
     try {
       await ch.join();
       joinedGroups.add(groupId);
+      groupReceiver.markReady(groupId);
       console.error(`[meshimize-mcp] Joined group:${groupId}`);
     } catch (err) {
       ch.off("new_message", handler);
       groupHandlers.delete(groupId);
+      groupReceiver.markFailed(
+        groupId,
+        `group channel join was not acknowledged: ${getErrorMessage(err)}`,
+      );
       throw err;
     }
   }
@@ -192,5 +301,6 @@ export async function startOrchestration(deps: StartupDeps): Promise<StartupResu
     actingIdentityIsDefault: currentIdentity.is_default,
     accountDisplayName: account.display_name,
     joinedGroups,
+    groupReceiver,
   };
 }

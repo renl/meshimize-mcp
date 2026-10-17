@@ -23,6 +23,7 @@ import type { MeshimizeAPI } from "../src/api/client.js";
 import type { MessageBuffer } from "../src/buffer/message-buffer.js";
 import { DelegationContentBuffer } from "../src/buffer/delegation-content-buffer.js";
 import type { Config } from "../src/config.js";
+import { createGroupReceiverReadiness } from "../src/startup.js";
 import { createAuthorityLookupMap } from "../src/state/authority-lookups.js";
 import { createAuthoritySessionContextStore } from "../src/state/authority-session-context.js";
 import { createMembershipPathMap } from "../src/state/membership-paths.js";
@@ -87,6 +88,7 @@ function createMockDeps(): ToolDependencies {
     authorityLookups: createAuthorityLookupMap(),
     membershipPaths: createMembershipPathMap(),
     authoritySessionContext,
+    groupReceiver: createGroupReceiverReadiness(),
     workflowRecorder: createRecorder(),
   };
 }
@@ -398,6 +400,7 @@ describe("tool handlers", () => {
   });
 
   it("approve_join returns canonical result and marks the next ask as post_approval_first_ask", async () => {
+    deps.groupReceiver!.markReady(mockGroup.id);
     (deps.api.searchGroups as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: [mockGroup],
       meta: { has_more: false, next_cursor: null, count: 1 },
@@ -441,6 +444,24 @@ describe("tool handlers", () => {
       group_id: mockGroup.id,
       role: "member",
     });
+  });
+
+  it("approve_join without a receiver cannot advertise delivery readiness", async () => {
+    deps.groupReceiver = undefined;
+    deps.pendingJoins.add(mockGroup);
+    vi.mocked(deps.api.joinGroup).mockResolvedValue({
+      data: { group_id: mockGroup.id, role: "member" },
+    } as Awaited<ReturnType<MeshimizeAPI["joinGroup"]>>);
+    const result = await approveJoinHandler({ group_id: mockGroup.id }, deps);
+    expect(deps.api.joinGroup).toHaveBeenCalledTimes(1);
+    expect.soft(result).not.toHaveProperty("authority_continuation.state", "ready_to_ask");
+    expect.soft(JSON.stringify(result)).not.toContain("post_approval_first_ask");
+    expect.soft(deps.membershipPaths.resolve(mockGroup.id)).toBe("existing_membership");
+    expect
+      .soft(deps.authoritySessionContext.getGroupContext(mockGroup.id)?.state)
+      .not.toBe("ready_to_ask");
+    expect.soft(result).toHaveProperty("message", expect.stringMatching(/membership.*may.*exist/i));
+    expect.soft(result).toHaveProperty("message", expect.stringMatching(/delivery.*not ready/i));
   });
 
   it("reject_join clears pending state and does not create post-approval state", async () => {
