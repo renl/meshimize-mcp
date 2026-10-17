@@ -156,6 +156,9 @@ test(
     }
     const tools = await client.listTools();
     assert.ok(tools.tools.some((tool) => tool.name === "approve_join"));
+    const identityDeadline = Date.now() + 5000;
+    while (!diagnostics.includes(`identity:${actingId}`) && Date.now() < identityDeadline)
+      await delay(20);
     assert.ok(
       diagnostics.includes(`identity:${actingId}`),
       "own MCP identity receiver established before approval",
@@ -176,6 +179,7 @@ test(
     assert.equal((await api(`/groups/${publicId}/members`, "GET", creator.auth)).data.length, 1);
     const approved = await call("approve_join", { group_id: publicId });
     assert.equal(approved.isError, false);
+    assert.equal(approved.data.authority_continuation.state, "ready_to_ask");
     const readyDeadline = Date.now() + 5000;
     while (!diagnostics.includes(`Joined group:${publicId}`)) {
       assert.ok(Date.now() < readyDeadline, "MCP group receiver readiness");
