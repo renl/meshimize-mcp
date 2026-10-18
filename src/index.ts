@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   const startup = await startOrchestration({ api, socket, buffer });
 
   // 4. Create and start MCP server
-  const server = new McpServer({ name: "meshimize-mcp", version: "0.1.19" });
+  const server = new McpServer({ name: "meshimize-mcp", version: "0.1.20" });
   registerTools(server, {
     api,
     socket,

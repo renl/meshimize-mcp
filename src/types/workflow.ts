@@ -47,15 +47,20 @@ export interface AuthorityContinuation {
   expires_at: string | null;
 }
 
+/** Where pending-join metadata came from: public discovery, or nothing verified. */
+export type PendingJoinMetadataSource = "public_discovery" | "unknown";
+
 export interface PendingJoinRequest {
   id: string;
   group_id: string;
-  group_name: string;
-  group_type: AuthorityLookupGroupType;
+  group_name: string | null;
+  group_type: AuthorityLookupGroupType | null;
   group_description: string | null;
-  owner_identity_id: string;
-  owner_display_name: string;
-  owner_verified: boolean;
+  /** Canonical `owner_account_id` (discovery `owner.id`); never an acting identity. */
+  owner_identity_id: string | null;
+  owner_display_name: string | null;
+  owner_verified: boolean | null;
+  metadata_source: PendingJoinMetadataSource;
   created_at: string;
   expires_at: string;
 }

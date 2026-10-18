@@ -391,6 +391,7 @@ describe("tool handlers", () => {
     });
     expect(first.group).toEqual({
       id: mockGroup.id,
+      metadata_source: "public_discovery",
       name: mockGroup.name,
       description: mockGroup.description,
       type: mockGroup.type,
