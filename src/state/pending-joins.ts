@@ -1,17 +1,19 @@
 import crypto from "node:crypto";
-import type { PendingJoinRequest } from "../types/workflow.js";
+import type { PendingJoinMetadataSource, PendingJoinRequest } from "../types/workflow.js";
 import type { Config } from "../config.js";
 
 interface PendingJoinGroupInput {
   id: string;
-  name: string;
-  description: string | null;
-  type: PendingJoinRequest["group_type"];
-  owner: {
+  /** Known public metadata; omit for an operator-supplied ID with no verified metadata. */
+  name?: string | null;
+  description?: string | null;
+  type?: PendingJoinRequest["group_type"];
+  owner?: {
     id: string;
     display_name: string;
     verified: boolean;
-  };
+  } | null;
+  metadataSource?: PendingJoinMetadataSource;
 }
 
 export interface PendingJoinMap {
@@ -60,15 +62,19 @@ class PendingJoinMapImpl implements PendingJoinMap {
     }
 
     const now = Date.now();
+    // An `unknown` request carries no verified metadata at all: every metadata field stays
+    // null (never `false`) so nothing is fabricated from an operator-supplied ID.
+    const unknown = group.metadataSource === "unknown";
     const request: PendingJoinRequest = {
       id: crypto.randomUUID(),
       group_id: group.id,
-      group_name: group.name,
-      group_type: group.type,
-      group_description: group.description,
-      owner_identity_id: group.owner.id,
-      owner_display_name: group.owner.display_name,
-      owner_verified: group.owner.verified,
+      group_name: unknown ? null : (group.name ?? null),
+      group_type: unknown ? null : (group.type ?? null),
+      group_description: unknown ? null : (group.description ?? null),
+      owner_identity_id: unknown ? null : (group.owner?.id ?? null),
+      owner_display_name: unknown ? null : (group.owner?.display_name ?? null),
+      owner_verified: unknown ? null : (group.owner?.verified ?? null),
+      metadata_source: unknown ? "unknown" : "public_discovery",
       created_at: new Date(now).toISOString(),
       expires_at: new Date(now + this.joinTimeoutMs).toISOString(),
     };
