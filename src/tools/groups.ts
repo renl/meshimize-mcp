@@ -7,7 +7,7 @@ import { toAuthorityContinuation } from "../state/authority-session-context.js";
 import { MeshimizeAPIError } from "../api/client.js";
 import type { GroupJoinResponse } from "../types/groups.js";
 import type { GroupReceiverOutcome } from "../startup.js";
-import type { ApproveJoinResult } from "../types/workflow.js";
+import type { ApproveJoinResult, PendingJoinRequest } from "../types/workflow.js";
 
 /** Bounded wait for the actual `group:<id>` receiver after a successful join write. */
 const JOIN_RECEIVER_READY_TIMEOUT_MS = 10_000;
@@ -24,22 +24,35 @@ function isDefinitiveJoinRejection(error: unknown): boolean {
   return error instanceof MeshimizeAPIError && error.status >= 400 && error.status < 500;
 }
 
-function buildPendingJoinGroup(group: {
-  id: string;
-  name: string;
-  description: string | null;
-  type: "open_discussion" | "qa" | "announcement";
-  owner_name: string;
-  owner_verified: boolean;
-}) {
+/**
+ * Operator-facing view of a pending request. Unknown metadata stays explicitly null:
+ * no name, type, owner, verification badge, or private/public label is ever invented.
+ */
+function toPendingJoinGroup(pending: PendingJoinRequest) {
   return {
-    id: group.id,
-    name: group.name,
-    description: group.description,
-    type: group.type,
-    owner_name: group.owner_name,
-    owner_verified: group.owner_verified,
+    id: pending.group_id,
+    metadata_source: pending.metadata_source,
+    name: pending.group_name,
+    description: pending.group_description,
+    type: pending.group_type,
+    owner_name: pending.owner_display_name,
+    owner_verified: pending.owner_verified,
   };
+}
+
+/**
+ * Prompt for an operator-supplied Group ID that Meshimize did not confirm through public
+ * discovery. States what is unverified and how to check it; never asserts existence or
+ * visibility and never claims the join will succeed.
+ */
+function unknownPendingJoinMessage(groupId: string, expiresIn: number): string {
+  return (
+    `Join request created for group ID ${groupId}. ` +
+    "Meshimize returned no verified metadata for this ID, so its details and your eligibility are unverified. " +
+    "Compare this full ID with a trusted source before you approve. " +
+    "Approval only attempts the join and may be denied. " +
+    `This request expires in ${expiresIn} minute${expiresIn !== 1 ? "s" : ""}.`
+  );
 }
 
 /**
@@ -147,14 +160,7 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
     return {
       status: "already_pending",
       pending_request_id: existing.id,
-      group: buildPendingJoinGroup({
-        id: existing.group_id,
-        name: existing.group_name,
-        description: existing.group_description,
-        type: existing.group_type,
-        owner_name: existing.owner_display_name,
-        owner_verified: existing.owner_verified,
-      }),
+      group: toPendingJoinGroup(existing),
       message:
         "A join request for this group is already pending operator approval. " +
         "Ask your operator to approve it, then call `approve_join`.",
@@ -174,9 +180,33 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
   }
 
   const groupsResult = await deps.api.searchGroups({ limit: 100 });
+  if (!Array.isArray(groupsResult.data)) {
+    throw new Error(
+      "Meshimize returned a malformed group discovery response; no join request was created.",
+    );
+  }
+
   const group = groupsResult.data.find((g) => g.id === args.group_id);
+  // Absence from a bounded public page proves neither private visibility nor nonexistence:
+  // an operator-supplied ID becomes an explicitly unverified local pending request instead.
   if (!group) {
-    throw new Error("Group not found or is not public.");
+    const pending = deps.pendingJoins.add({ id: args.group_id, metadataSource: "unknown" });
+    // Unknown records omit optional name/type rather than fabricating placeholder values.
+    deps.workflowRecorder.record("authority_join_pending", { group_id: pending.group_id });
+    const authorityContext = deps.authoritySessionContext.recordJoinApprovalPending(
+      pending.group_id,
+      pending.id,
+      pending.expires_at,
+    );
+    const expiresIn = Math.round((new Date(pending.expires_at).getTime() - Date.now()) / 60000);
+
+    return {
+      status: "pending_operator_approval",
+      pending_request_id: pending.id,
+      group: toPendingJoinGroup(pending),
+      message: unknownPendingJoinMessage(pending.group_id, expiresIn),
+      authority_continuation: toAuthorityContinuation(authorityContext),
+    };
   }
 
   const pending = deps.pendingJoins.add({
@@ -204,14 +234,7 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
   return {
     status: "pending_operator_approval",
     pending_request_id: pending.id,
-    group: buildPendingJoinGroup({
-      id: group.id,
-      name: group.name,
-      description: group.description,
-      type: group.type,
-      owner_name: group.owner.display_name,
-      owner_verified: group.owner.verified,
-    }),
+    group: toPendingJoinGroup(pending),
     message:
       `Join request created for group "${group.name}" (${group.type}, ` +
       `${group.member_count} members, owned by ${group.owner.display_name}` +
@@ -345,7 +368,7 @@ export async function rejectJoinHandler(args: { group_id: string }, deps: ToolDe
   return {
     status: "rejected",
     group_id: args.group_id,
-    message: `Join request for group "${pending.group_name}" has been cancelled.`,
+    message: `Join request for group "${pending.group_name ?? pending.group_id}" has been cancelled.`,
   };
 }
 
@@ -361,6 +384,7 @@ export async function listPendingJoinsHandler(
     pending_requests: pending.map((p) => ({
       id: p.id,
       group_id: p.group_id,
+      metadata_source: p.metadata_source,
       group_name: p.group_name,
       group_type: p.group_type,
       owner_name: p.owner_display_name,
@@ -451,7 +475,7 @@ export function registerSearchGroups(server: McpServer, deps: ToolDependencies):
 export function registerJoinGroup(server: McpServer, deps: ToolDependencies): void {
   server.tool(
     "join_group",
-    "Request to join a public group on the Meshimize network. This requires approval from your human operator before the join is executed. After calling this tool, inform your operator about the group and ask for their approval. Once approved, call `approve_join` with the group_id to complete the join.",
+    "Request to join a group on the Meshimize network by its Group ID. This requires approval from your human operator before the join is executed. A public group is described for the operator; an ID with no public match is shown as an unverified ID-only request, so the operator must compare it with a trusted source. Approval only attempts the join and may be denied. After calling this tool, inform your operator about the group and ask for their approval. Once approved, call `approve_join` with the group_id to complete the join.",
     {
       group_id: z.string().uuid().describe("The UUID of the group to join"),
     },
