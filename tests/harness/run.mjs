@@ -15,7 +15,8 @@ import { randomUUID, createHash } from "node:crypto";
 const home = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const root = resolve(home, "../../../..");
 const mode = process.argv[2] ?? "baseline";
-if (!["baseline", "wire", "suite"].includes(mode)) throw Error("Use baseline, wire or suite");
+if (!["baseline", "wire", "suite", "private-owner", "private-invited"].includes(mode))
+  throw Error("Unknown mode");
 const candidate = "a93478e67ad67802f0ea09cb2693733487f98bb3";
 const run = `meshimize-mcp03-${randomUUID().slice(0, 8)}`;
 const out = join(root, "_build/sdet-local/runs", run);
@@ -35,8 +36,8 @@ const evidence = {
   run,
   mode,
   candidate,
-  clientBaseline: "54492ad914a4e164a9cd53987c0b8b247fc89bf6",
-  clientCandidate: process.env.MCP_TEST_CANDIDATE ?? "54492ad914a4e164a9cd53987c0b8b247fc89bf6",
+  clientBaseline: "bec39010c4a908d84372956a9e8ed0fecee7b4ca",
+  clientCandidate: process.env.MCP_TEST_CANDIDATE ?? "bec39010c4a908d84372956a9e8ed0fecee7b4ca",
   files: {},
 };
 const start = Date.now();
@@ -223,7 +224,7 @@ try {
     `FROM ${cache}\nWORKDIR /proof\nCOPY package*.json ./\nRUN npm ci --ignore-scripts --no-audit --no-fund\nCOPY . .\nRUN npm run build\n`,
   );
   await build(`${run}-client`, client);
-  if (mode === "baseline") {
+  if (mode === "baseline" || mode.startsWith("private-")) {
     const provenance = join(root, "_build/sdet-local/server-cache-03a");
     const manifest = readFileSync(join(provenance, "source-manifest.json"));
     const manifestSha256 = createHash("sha256").update(manifest).digest("hex");
@@ -295,6 +296,8 @@ try {
       `container:${app}`,
       "-e",
       "TEST_DISPOSABLE_ENV=true",
+      "-e",
+      `PGI_PATH=${mode}`,
       `${run}-client`,
       "node",
       "--test",
