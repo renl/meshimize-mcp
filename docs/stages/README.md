@@ -1,5 +1,11 @@
 # Active MCP slices
 
+## Prompt hotfix setup —2026-10-20
+
+| Spec                                                         | Path / branch / change / owner / status                                                                                   | Baseline / next action / cleanup evidence                                                                                                                                                                   |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [03b repeat prompt](private-owner-join-03b-repeat-prompt.md) | `.worktree/private-owner-join-03b-repeat-prompt` / same / unknown-repeat consent text / SDET / active, setup RED measured | main `957992f5976396b5c190f38c08ad1b5df040b493`; CoS→SE exact prompt-only fix;3PASS/1FAIL; root `_build/sdet-local/repeat-prompt-setup/mcp-red.log`; retain through verified landing, no cleanup performed. |
+
 | Spec                                        | Path / branch / baseline                                                                                                  | Owner / status                      | Next action / cleanup evidence                                                                                                                  |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Fixture](private-owner-join-03-fixture.md) | `repos/meshimize-mcp/.worktree/private-owner-join-03-fixture` / `private-owner-join-03-fixture` / main `bec3901`          | SDET / published prerequisite       | SHA `032e999a2dfcb40659a9cea5c65c2e618b9f1bda`; suite/public baseline PASS with cleanup; PR target main, no PR created; retain until landing.   |
