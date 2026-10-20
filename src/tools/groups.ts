@@ -157,13 +157,20 @@ export async function joinGroupHandler(args: { group_id: string }, deps: ToolDep
       existing.expires_at,
     );
 
+    const expiresIn = Math.round((new Date(existing.expires_at).getTime() - Date.now()) / 60000);
+
     return {
       status: "already_pending",
       pending_request_id: existing.id,
       group: toPendingJoinGroup(existing),
+      // An unconfirmed operator-supplied ID repeats the same full warning as the initial
+      // request: the ID stays visible and approval remains an unverified attempt. The
+      // repeat stays local, so no second discovery read or join write is issued.
       message:
-        "A join request for this group is already pending operator approval. " +
-        "Ask your operator to approve it, then call `approve_join`.",
+        existing.metadata_source === "unknown"
+          ? unknownPendingJoinMessage(existing.group_id, expiresIn)
+          : "A join request for this group is already pending operator approval. " +
+            "Ask your operator to approve it, then call `approve_join`.",
       authority_continuation: toAuthorityContinuation(authorityContext),
     };
   }
